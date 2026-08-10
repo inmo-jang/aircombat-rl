@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# training artefacts: policies are outputs, not source
+runs/
+*.zip
+*.pt
+
+# TacView recordings
+*.acmi
