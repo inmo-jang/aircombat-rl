@@ -1,0 +1,40 @@
+[project]
+name = "aircombat-gym"
+version = "0.1.0"
+description = "Air combat environments on JSBSim's F-16, for a reinforcement learning course"
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned, not floated: the flight model is the specification here.  Envelope
+    # constants in core/envelope.py were measured against this exact build, and
+    # a JSBSim release that changes the f16 aerodynamics silently invalidates
+    # them -- corner speed, n_max(V, h), the throttle-to-thrust map, all of it.
+    "jsbsim==1.3.0",
+    "numpy",
+    "pygame",
+    "gymnasium",
+]
+
+[project.optional-dependencies]
+# Only the training side needs these.  Keeping them out of the base install is
+# the same boundary the package enforces in code: the environment does not
+# import a learning library, so someone who only wants to fly it does not pay
+# for torch.
+train = ["stable-baselines3", "torch"]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["aircombat_gym*"]
+
+# The student manual ships with the package it documents, not just with the repo
+[tool.setuptools.package-data]
+aircombat_gym = ["README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# archived/ holds modules waiting to be restored; their relative imports point
+# at where they used to live, so collecting them would fail on import
+norecursedirs = ["archived", "preflight", "docs", ".git"]

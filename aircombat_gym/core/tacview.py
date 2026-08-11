@@ -140,16 +140,22 @@ class AcmiRealtime(AcmiWriter):
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((host, port))
-        self._srv.listen(1)
+        # A backlog of 1 meant TacView's retries timed out behind the stale
+        # connection it had already given up on: attempt 1 connected, 2-5 did
+        # not.  Measured 2026-08-11.
+        self._srv.listen(8)
         self._sock: socket.socket | None = None
 
     @property
     def address(self) -> str:
-        try:
-            ip = socket.gethostbyname(socket.gethostname())
-        except OSError:
-            ip = "127.0.0.1"
-        return f"{ip}:{self.port}"
+        """What to type into TacView.  It used to advertise whichever adapter
+        Windows named first, and that address did not connect."""
+        return f"localhost:{self.port}"
+
+    def poll(self) -> None:
+        """Accept a waiting viewer.  Call it every render frame: `frame()` also
+        accepts, but only while the simulation is stepping."""
+        self._try_accept()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until a viewer attaches.  Optional -- `frame()` also accepts."""
@@ -184,6 +190,7 @@ class AcmiRealtime(AcmiWriter):
         except (socket.timeout, OSError):
             pass                           # TacView does not always reply
         self._sock = sock
+        print("  TacView attached", flush=True)
         # header first, then let the next frame re-introduce every object
         self.start()
         self._declared.clear()
@@ -196,7 +203,8 @@ class AcmiRealtime(AcmiWriter):
         try:
             self._sock.sendall(text.encode())
         except OSError:
-            self._sock = None              # viewer went away; it may come back
+            self._sock = None              # it may come back; we keep listening
+            print("  TacView detached", flush=True)
 
     @property
     def connected(self) -> bool:

@@ -6,8 +6,18 @@ An F-16 air combat environment on [JSBSim](https://github.com/JSBSim-Team/jsbsim
 **Fly it by hand before you train anything on it.** The point is to feel what your
 policy will be commanding, and what the aircraft refuses to do.
 
-> The RL surface (`reset` / `step`) is not built yet. This is the flight model,
-> the control interface and the gun.
+```python
+import gymnasium as gym
+import aircombat_gym.wvr.envs                 # registers the ids
+
+env = gym.make("AirCombat/Circular-v0")       # obs 37, action Discrete(9)
+obs, info = env.reset(seed=0)
+obs, reward, terminated, truncated, info = env.step(action)
+```
+
+**The environment does not compute a reward** — `step` returns 0.0 and hands the
+material out in `info`. Writing the reward, and turning the 37 raw channels into
+something a network can learn from, is the assignment.
 
 ## Install and run
 
@@ -21,6 +31,10 @@ python -m aircombat_gym.tools.manual_operation --tacview --enemy circler   # wit
 **On macOS or Ubuntu, drop `--tacview`** — TacView is Windows-only. Everything you
 need to fly is in the pygame panel; you only lose the 3D view. To watch in 3D later,
 record with `--acmi flight.acmi` (works on any OS) and open the file on Windows.
+
+`--enemy circler` orbits at 20,000 ft and does not shoot back. `BACKSPACE` draws a
+fresh random engagement and `--seed N` makes the sequence reproducible. `--help`
+lists the rest.
 
 ## Two control layers — `tab` switches
 
@@ -76,7 +90,9 @@ is like. Fly a few minutes in both.
 - **DISCRETE** — the grid a policy gets: heading ±30°, speed ±20 kt, altitude
   ±1000 ft. Tap `D` → turns 30° and stops. Hold `D` → never stops turning
 
-The gym exposes the discrete one, `Discrete(27)`.
+The gym exposes the discrete one. A task picks which of the three axes it hands
+over, so the size follows: heading and speed only is `Discrete(9)`, all three is
+`Discrete(27)`.
 
 ## What the panel is telling you
 
@@ -86,17 +102,5 @@ The gym exposes the discrete one, `Discrete(27)`.
 | `ENERGY` | `Eh = h + V²/2g`. Blue is height, orange is speed. Blue shrinking while orange grows is a trade, not a loss; the bar getting shorter than the white 5-second mark is a loss |
 | `Ps` | rate of change of `Eh`. **This is the bill for a hard turn** |
 | `Nz` | current g, against what this speed and altitude can actually make |
+| `hold` | rounds need a solution *held*, not touched. `IN ZONE` means inside the envelope, `HITTING` means rounds are landing. Aim at the **pipper** — it sits ahead of the target, not on it |
 | `alpha` / `authority` | STICK only. The FLCS cuts your pitch command as AoA rises — `authority 51 %` means half your stick is being thrown away, on purpose, to keep you out of a stall |
-
-## Flying against the target
-
-```bash
-python -m aircombat_gym.tools.manual_operation --tacview --enemy circler
-```
-
-It orbits at 20,000 ft and 325 kt and does not shoot back.
-
-You hit when you are **within 15° of the aim point, at 150–1,500 m, for 0.6 s**.
-The aim point sits ahead of the target, not on it — **the pipper shows you where.**
-Closer and squarer to his tail does more damage; a good shot kills in about 2 s.
-`IN ZONE` means inside the envelope, `HITTING` means rounds are landing.

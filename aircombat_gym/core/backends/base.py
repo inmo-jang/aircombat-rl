@@ -33,6 +33,8 @@ class AircraftState:
     alpha: float      # angle of attack [rad]
     beta: float       # sideslip [rad]
     gamma: float      # flight path angle [rad]
+    nx: float         # body-axis load factor, forward [g]
+    ny: float         # body-axis load factor, right wing [g]
     nz: float         # load factor [g], +1 in level flight
     track: float      # velocity-vector ground track [rad]
     lat: float        # geodetic latitude [deg]  -- for TacView

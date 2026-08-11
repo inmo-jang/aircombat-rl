@@ -9,6 +9,15 @@ dist/
 runs/
 *.zip
 *.pt
+*.pth
 
 # TacView recordings
 *.acmi
+
+# The answer key.  A student repo is downstream of this one, so once this lands
+# in history it cannot be taken back out.  Moves to a private submodule later.
+solutions/
+
+# Superseded experiments, kept on disk for reference only.  141 MB of old
+# checkpoints does not belong in anyone's clone.
+archived/

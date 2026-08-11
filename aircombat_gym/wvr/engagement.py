@@ -112,7 +112,14 @@ def _angle_to(dx, dy, dz, nx, ny, nz) -> float:
     return math.acos(max(-1.0, min(1.0, (dx * nx + dy * ny + dz * nz) / (r * n))))
 
 
-def look(me, foe) -> Engagement:
+def look(me, foe, cone_deg: float = WEZ_ATA_DEG,
+         damage_rate: float = DAMAGE_RATE) -> Engagement:
+    """`cone_deg` and `damage_rate` are per-task, so they are arguments.
+
+    Arguments rather than module constants a task reassigns: under
+    `SubprocVecEnv(start_method="spawn")` each worker re-imports the module and
+    gets the default back, which once made two "different" runs identical.
+    """
     dx, dy, dz = foe.x - me.x, foe.y - me.y, foe.h - me.h
     r = math.sqrt(dx * dx + dy * dy + dz * dz)
     if r < 1e-6:
@@ -145,15 +152,15 @@ def look(me, foe) -> Engagement:
     ata_lead = _angle_to(ax, ay, az, nx, ny, nz)
 
     lead_deg = math.degrees(ata_lead)
-    inside = lead_deg <= WEZ_ATA_DEG and WEZ_R_MIN <= r <= WEZ_R_MAX
+    inside = lead_deg <= cone_deg and WEZ_R_MIN <= r <= WEZ_R_MAX
     dmg = 0.0
     if inside:
         # three factors, all multiplying: how well the solution is held, how
         # close, and how square to his tail.  The last is what makes the six
         # worth reaching and the beam worth denying.
         f_aspect = ASPECT_FLOOR + (1.0 - ASPECT_FLOOR) * max(0.0, math.cos(aa))
-        dmg = (DAMAGE_RATE
-               * (1.0 - lead_deg / WEZ_ATA_DEG)
+        dmg = (damage_rate
+               * (1.0 - lead_deg / cone_deg)
                * (1.0 - (r - WEZ_R_MIN) / (WEZ_R_MAX - WEZ_R_MIN))
                * f_aspect)
     return Engagement(ata, ata_signed, ata_lead, aa, r, r_dot, inside, dmg,

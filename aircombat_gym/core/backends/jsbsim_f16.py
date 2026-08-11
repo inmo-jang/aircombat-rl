@@ -228,6 +228,8 @@ class JSBSimF16(AircraftBackend):
             alpha=math.radians(fdm["aero/alpha-deg"]),
             beta=math.radians(fdm["aero/beta-deg"]),
             gamma=fdm["flight-path/gamma-rad"],
+            nx=fdm["accelerations/n-pilot-x-norm"],
+            ny=fdm["accelerations/n-pilot-y-norm"],
             # n-pilot-z-norm reads -1 in level flight
             nz=-fdm["accelerations/n-pilot-z-norm"],
             track=math.atan2(ve, vn),

@@ -50,7 +50,8 @@ Delete work too: they are what the keypad sends with NumLock off.
   m             --                       CONTINUOUS <-> DISCRETE
 
   tab             STICK <-> GUIDANCE
-  p / r / esc     pause / reset / quit
+  BACKSPACE       new random engagement (full reset)
+  p / esc         pause / quit
   + - / g         zoom / trail length
 
 The vertical axis is the one place the layers disagree, on purpose: W is
@@ -73,7 +74,7 @@ what a continuous and a discrete action space are like before choosing one.
               heading +-30 deg, speed +-20 kt, altitude +-1000 ft.  Tapping lands
               the turn; holding re-derives the target from the current state
               every step, so the aircraft never catches up and the manoeuvre is
-              sustained.  This is `wvr/spaces.py` and nothing else.
+              sustained.  This is `wvr/actions.py` and nothing else.
 
 `--tacview` serves TacView Advanced over TCP; it is Windows-only, so drop it on
 macOS and Linux and the pygame panel is all of it.  `--acmi` records a file
@@ -87,42 +88,33 @@ from __future__ import annotations
 
 import argparse
 import math
+import random
 import sys
 import time
 
 import pygame
 
-from ..core.aircraft import DECISION_HZ, PHYSICS_HZ, SUBSTEPS, Aircraft
-from ..core.control.guidance import Guidance
-from ..wvr.engagement import (WEZ_ATA_DEG, WEZ_R_MAX, WEZ_R_MIN, look)
+from ..core.aircraft import DECISION_HZ, SUBSTEPS, Aircraft
+from ..core.control.guidance import Guidance, wrap_pi as _wrap
+from ..wvr.engagement import (MUZZLE_MS, WEZ_ATA_DEG, WEZ_R_MAX, WEZ_R_MIN,
+                              look)
 from ..wvr.baselines import BY_NAME as OPPONENTS
 from ..core.envelope import (ALT_MAX_FT, ALT_MIN_FT, G, H0_FT, N_STRUCT,
                         THROTTLE_CAP, V_MAX_KT, V_MIN_KT, in_measured_table,
                         level_turn_rate_deg_s, max_bank_deg, n_max)
-from ..wvr.spaces import DELTA_ALT_FT, DELTA_HEADING_DEG, DELTA_SPEED_KT
-from ..core.tacview import AcmiFile, AcmiRealtime, state_to_object
+from ..wvr.actions import DELTA_ALT_FT, DELTA_HEADING_DEG, DELTA_SPEED_KT
+from ..core.tacview import AcmiFile, AcmiRealtime
+from . import render
+from .render import ACCENT, BAD, BG, DIM, FG, GOOD, WARN
 
-W, H = 1300, 860
-MAP_W = 880
-TOP_H = 566                 # top-down view; the altitude strip sits under it
-PROF_TOP = 574
-PROF_H = H - PROF_TOP
-PROFILE_WINDOW_S = 120.0
+# Geometry comes from `render.Layout` so this tool and `auto_operation` cannot
+# drift apart.  The aliases keep the rest of the file readable.
+W, H = render.W, render.H
+MAP_W = render.MAP_W
+PROFILE_WINDOW_S = render.PROFILE_WINDOW_S
 # full scale for the energy bar: the ceiling plus the speed limit as height
 EH_FULL_FT = 50000.0
 
-BG = (16, 18, 24)
-PANEL = (24, 27, 36)
-GRID = (34, 39, 52)
-FG = (225, 230, 240)
-DIM = (130, 140, 160)
-ACCENT = (90, 200, 255)
-WARN = (255, 170, 60)
-BAD = (255, 90, 90)
-GOOD = (120, 230, 150)
-TRAIL = (70, 110, 150)
-SKY = (58, 104, 158)
-GROUND = (122, 88, 52)
 HEIGHT_BLUE = (80, 120, 200)
 
 TRAIL_LENGTHS = (600, 2400, 0)          # 0 = unlimited
@@ -157,7 +149,7 @@ ALPHA_HARD_DEG = 15.5   # measured plateau under full aft stick below 450 kt
 # --- guidance: CONTINUOUS-mode increments ------------------------------------
 # Deliberately NOT the action table.  CONTINUOUS mode is a piloting aid and
 # wants fine resolution per press with speed from key repeat; DISCRETE is the
-# frozen action space and uses spaces.DELTA_*.
+# frozen action space and uses actions.DELTA_*.
 #
 # Sized against what the aircraft can do.  Guidance asks for the full available
 # turn rate at 30 deg of heading error and turns at at most ~13 deg/s, so at
@@ -268,6 +260,16 @@ def main(argv: list[str] | None = None) -> int:
                          "ladder.  It does not shoot back yet")
     ap.add_argument("--enemy-range", type=float, default=2500.0,
                     help="how far ahead the target starts, metres")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="make the session reproducible: the same seed gives "
+                         "the same sequence of engagements, BACKSPACE by "
+                         "BACKSPACE.  Without it the first start is the fixed "
+                         "one straight ahead and the rest are random")
+    ap.add_argument("--cone", type=float, default=WEZ_ATA_DEG,
+                    help=f"firing cone half-angle, degrees (default "
+                         f"{WEZ_ATA_DEG:.0f}, the weapon's own).  An assignment "
+                         f"may widen it -- project 01 runs at 30, so "
+                         f"`--cone 30` is how you hand-fly that geometry")
     ap.add_argument("--ramp", type=float, default=RAMP_TO_FULL_S,
                     help="STICK: seconds of held key to reach full deflection. "
                          "Raise it if roll feels twitchy, lower it if reversals "
@@ -289,13 +291,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"warning: level trim did not converge at {args.speed} kt "
               f"/ {args.alt:.0f} ft", file=sys.stderr)
 
-    def _spawn_foe():
+    rng = random.Random(args.seed)
+
+    def _spawn_foe(me=None, randomise=False):
+        """Put a target up.  `randomise` draws a fresh geometry, as the task does.
+
+        Straight ahead every time is right for a first look and wrong for
+        practice: you learn the one approach and nothing about converting an
+        arbitrary start, which is the whole of assignment 01.  BACKSPACE draws
+        a new one.
+        """
         if args.enemy == "none":
             return None
+        # With a seed the whole session is reproducible, first engagement
+        # included -- otherwise run N and run N+1 would differ by one draw and
+        # "same seed, same fight" would quietly not be true.
+        if args.seed is not None:
+            randomise = True
+        bot = OPPONENTS[args.enemy]()
         # Half of V_MAX, which is 325 kt -- slow enough to be caught by anything
         # that can point, fast enough that the chase is not a formality.
-        return _Foe(OPPONENTS[args.enemy](), h0_ft=H0_FT, v_kt=0.5 * V_MAX_KT,
-                    x=0.0, y=args.enemy_range, psi=math.pi / 2)
+        if not randomise or me is None:
+            x, y, psi = 0.0, args.enemy_range, math.pi / 2
+        else:
+            brg = rng.uniform(-math.pi, math.pi)
+            r = rng.uniform(1500.0, 4000.0)
+            x, y = me.x + r * math.sin(brg), me.y + r * math.cos(brg)
+            psi = rng.uniform(-math.pi, math.pi)
+            if hasattr(bot, "rate"):        # Circler: a fresh turn rate too
+                bot.rate = rng.uniform(1.0, 5.0) * rng.choice((-1.0, 1.0))
+        return _Foe(bot, h0_ft=H0_FT, v_kt=0.5 * V_MAX_KT,
+                    x=x, y=y, psi=psi, cone_deg=args.cone)
 
     foe = _spawn_foe()
     foe_trail: list[tuple[float, float]] = []
@@ -307,9 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     live = None
     if args.tacview:
         live = AcmiRealtime(port=args.tacview_port)
-        print(f"TacView real-time telemetry on {live.address} "
-              f"(or 127.0.0.1:{args.tacview_port})")
-        print("  in TacView: Record -> Real-time Telemetry -> enter that address")
+        print(f"TacView real-time telemetry: {live.address}")
+        print("  in TacView: Record -> Real-time Telemetry -> that address")
         print("  attach whenever -- late viewers get the header and a re-introduction")
         if args.tacview_wait > 0:
             print(f"  waiting up to {args.tacview_wait:.0f}s ...", flush=True)
@@ -318,13 +343,9 @@ def main(argv: list[str] | None = None) -> int:
         sinks.append(live)
 
     pygame.init()
-    pygame.display.set_caption("aircombat - flight test")
-    screen = pygame.display.set_mode((W, H))
-    clock = pygame.time.Clock()
+    screen, _fonts, clock = render.open_window("flight test")
     pygame.key.set_repeat(*KEY_REPEAT_MS)       # drives the nudge sweep
-    f_big = pygame.font.SysFont("consolas", 22)
-    f = pygame.font.SysFont("consolas", 16)
-    f_small = pygame.font.SysFont("consolas", 13)
+    f_big, f, f_small = _fonts
 
     dt_decision = 1.0 / DECISION_HZ
     ramp_rate = 1.0 / max(args.ramp, 1e-3)
@@ -346,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     act = (0.0, 0.0, 0.0)
     meter = _Meter()
     crash: tuple[float, float, float, float] | None = None
+    kill_freeze = False
     handover: tuple[float, str] | None = None
     s = ac.state
     running = True
@@ -395,7 +417,11 @@ def main(argv: list[str] | None = None) -> int:
                     handover = (s.t, LAYERS[layer])
                 elif e.key == pygame.K_p:
                     paused = not paused
-                elif e.key == pygame.K_r:
+                elif e.key == pygame.K_BACKSPACE:
+                    # Full reset *and* a fresh random engagement, on one key.
+                    # `r` used to do the reset and BACKSPACE the respawn; two
+                    # keys for one idea, and `r` sat beside the rudder keys
+                    # where it read as a control rather than a command.
                     s = ac.reset(v_kt=args.speed)
                     ctl.update(aileron=0.0, elevator=0.0, rudder=0.0,
                                throttle=ac.backend.controls["throttle_cmd"])
@@ -403,8 +429,9 @@ def main(argv: list[str] | None = None) -> int:
                     profile.clear()
                     meter = _Meter()
                     crash = handover = None
-                    foe = _spawn_foe()
+                    foe = _spawn_foe(s, randomise=True)
                     foe_trail.clear()
+                    kill_freeze = False
                 elif e.key == pygame.K_g:
                     trail_i = (trail_i + 1) % len(TRAIL_LENGTHS)
                 elif e.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
@@ -469,7 +496,13 @@ def main(argv: list[str] | None = None) -> int:
         if paused or crash is not None:
             accum = 0.0
         n_steps = 0
-        while accum >= dt_decision and n_steps < 4:
+        # The fight is over when the target is down: stop the clock and let the
+        # picture stand, the way the policy viewer does.  BACKSPACE draws the
+        # next engagement, `r` resets everything.
+        if foe is not None and foe.health <= 0.0:
+            kill_freeze = True
+            accum = 0.0
+        while accum >= dt_decision and n_steps < 4 and not kill_freeze:
             if foe is not None:
                 foe.observe(s)
             if LAYERS[layer] == "STICK":
@@ -507,21 +540,18 @@ def main(argv: list[str] | None = None) -> int:
             trail.append((s.x, s.y))
             profile.append((s.t, s.h_ft))
             meter.update(s, ac.backend.controls)
-            objs = [state_to_object(s)]
             if foe is not None:
                 foe.step(dt_decision)
                 foe_trail.append((foe.state.x, foe.state.y))
                 if len(foe_trail) > TRAIL_LENGTHS[0]:
                     foe_trail.pop(0)
                 for note in foe.notes:
-                    for sink in sinks:
-                        sink.event(note, "101", "102")
+                    render.emit_event(sinks, note)
                 foe.notes.clear()
-                objs.append(state_to_object(foe.state, "102", "F-16C",
-                                            color=foe.acmi_colour))
-                objs[0]["locked"] = "102" if foe.eng and foe.eng.in_wez else None
-            for sink in sinks:
-                sink.frame(s.t, objs)
+            render.emit_frame(sinks, s.t, s,
+                              foe.state if foe is not None else None,
+                              locked=bool(foe is not None and foe.eng
+                                          and foe.eng.in_wez))
         if n_steps:
             lim = TRAIL_LENGTHS[trail_i]
             if lim and len(trail) > lim:
@@ -535,6 +565,9 @@ def main(argv: list[str] | None = None) -> int:
         if handover is not None and s.t - handover[0] > 4.0:
             handover = None
 
+        # `frame()` only accepts while the physics is stepping; polling here
+        # means a viewer can attach when paused or after a crash too
+        render.poll_sinks(sinks)
         _draw(screen, (f_big, f, f_small), ac, s, ctl, act, trail, profile,
               scale, paused, meter, live, rtf, LAYERS[layer],
               CMD_MODES[cmd_mode], crash, handover, args.throttle_cap,
@@ -577,8 +610,19 @@ class _Foe:
     TRACK_LOCK = 0.6
 
     def __init__(self, bot, h0_ft: float, v_kt: float,
-                 x: float, y: float, psi: float) -> None:
+                 x: float, y: float, psi: float,
+                 cone_deg: float = WEZ_ATA_DEG) -> None:
+        # The cone is a *task* parameter, not a constant of the world: this tool
+        # defaults to the weapon's own 15 deg, and assignment 01 widens it to 30.
+        # Flying the assignment's geometry by hand is the point of `--cone`.
+        self.cone_deg = cone_deg
         self.bot = bot
+        # A bot's state lives in reset(), not __init__ -- `Circler` counts steps
+        # for its turn period, `Evader` tracks a break timer.  `Combat` and every env call
+        # this and the env calls it on every episode; this tool did not, so any
+        # bot with state crashed on its first act().  It went unnoticed because
+        # the only bot in the tool at the time was stateless.
+        self.bot.reset()
         self.ac = Aircraft(h0_ft=h0_ft,
                            guidance=Guidance(h0_ft=h0_ft, throttle_cap=1.0))
         self.ac.reset(x=x, y=y, psi=psi, v_kt=v_kt)
@@ -607,12 +651,32 @@ class _Foe:
 
     def observe(self, me) -> None:
         self._me = me
-        self.eng = look(_kin(me), _kin(self.state))
+        self.eng = look(_kin(me), _kin(self.state), self.cone_deg)
+
+    def _bot_view(self) -> dict:
+        """What a baseline bot reads.  The same keys `envs.base` hands it, seen
+        from the target's chair -- so the bots that fight in the env are the
+        same objects that fly here, with no second code path."""
+        s, me = self.state, self._me
+        e = (look(_kin(s), _kin(me), self.cone_deg)
+             if me is not None else self.eng)
+        # `lead_signed` is what `ace` steers on, and `envs.base.Combat.observe` computes
+        # it there.  Leaving it out here meant any bot better than `pursuit`
+        # crashed on its first frame in this tool -- the two code paths have to
+        # hand a bot the same dict or "the same objects fly here" is not true.
+        lead_signed = _wrap(math.atan2(e.aim_dx, e.aim_dy) - s.psi)
+        return dict(ata=e.ata, ata_signed=e.ata_signed, ata_lead=e.ata_lead,
+                    lead_signed=lead_signed,
+                    aa=e.aa, range=e.r, range_rate=e.r_dot, in_wez=e.in_wez,
+                    own_speed=s.v_kt, opp_speed=me.v_kt if me else s.v_kt,
+                    own_alt=s.h_ft,
+                    alt_diff=(me.h_ft - s.h_ft) if me is not None else 0.0,
+                    dist_to_boundary=1e9)
 
     def step(self, dt: float) -> None:
         """Fly the bot one decision step, then adjudicate our shot."""
         if self.health > 0.0:
-            self.ac.step(*self.bot.act(self.state))
+            self.ac.step(*self.bot.act(self._bot_view()))
         else:
             self.ac.hold()          # a dead aircraft still has momentum
         if self.eng is None or self.health <= 0.0:
@@ -738,230 +802,38 @@ def _draw(screen, fonts, ac, s, ctl, act, trail, profile, scale, paused,
           ramp_s, foe=None, foe_trail=()):
     f_big, f, f_small = fonts
     screen.fill(BG, (0, 0, MAP_W, H))
-    cx, cy = MAP_W // 2, TOP_H // 2
 
-    def to_px(x, y):
-        return int(cx + (x - s.x) / scale), int(cy - (y - s.y) / scale)
-
-    step_px = 1000.0 / scale                                    # 1 km grid
-    if step_px >= 12:
-        gx = (-s.x / scale) % step_px
-        while gx < MAP_W:
-            pygame.draw.line(screen, GRID, (int(gx), 0), (int(gx), TOP_H))
-            gx += step_px
-        gy = (s.y / scale) % step_px
-        while gy < TOP_H:
-            pygame.draw.line(screen, GRID, (0, int(gy)), (MAP_W, int(gy)))
-            gy += step_px
-
-    if len(trail) > 1:
-        # decimate: a few hundred segments look identical and cost a tenth
-        stride = max(1, len(trail) // 400)
-        pts = [to_px(x, y) for x, y in trail[::stride]]
-        if len(pts) > 1:
-            pygame.draw.lines(screen, TRAIL, False, pts, 2)
-
-    if layer == "GUIDANCE":
-        _speed_vector(screen, f_small, cx, cy, s, ac.v_cmd_kt)
-        _heading_target(screen, cx, cy, ac.psi_cmd)
-    else:
-        # nose (where the gun points) against track (where it is going).  They
-        # separate by up to 27 deg in hard manoeuvring -- bank rotates the angle
-        # of attack into the horizontal plane -- and watching the two split is
-        # half the reason to hand-fly this.
-        _ray(screen, cx, cy, s.psi, 150, (90, 130, 90), 1)
-        _ray(screen, cx, cy, s.track, 110, ACCENT, 1)
-
+    # The world views come from `tools/render.py`, shared with the policy
+    # viewer.  They used to be duplicated here, and the copy read the firing
+    # cone from a module constant while the task it drew ran at a different
+    # one -- the picture was wrong in the only number that decides the game.
+    own = render.Track(s, list(trail), list(profile))
+    other = None
     if foe is not None:
-        _wez(screen, cx, cy, s, foe, scale)
-        _foe_symbol(screen, f_small, to_px, foe, foe_trail, scale)
-        _pipper(screen, f_small, cx, cy, s, foe, scale)
+        other = render.Track(foe.state, list(foe_trail), [],
+                             dead=foe.health <= 0.0)
+    weapon = render.Weapon(cone_deg=(foe.cone_deg if foe is not None
+                                     else WEZ_ATA_DEG), r_min=WEZ_R_MIN,
+                           r_max=WEZ_R_MAX, muzzle_ms=MUZZLE_MS,
+                           lock_s=_Foe.TRACK_LOCK)
+    in_wez = bool(foe is not None and foe.eng is not None and foe.eng.in_wez)
+    lock = (min(1.0, foe.track / _Foe.TRACK_LOCK) if foe is not None else 0.0)
 
-    pts = []
-    for ang, rad in ((0, 20), (2.5, 11), (math.pi, 5), (-2.5, 11)):
-        a = s.psi + ang
-        pts.append((cx + math.sin(a) * rad, cy - math.cos(a) * rad))
-    pygame.draw.polygon(screen, ACCENT, pts)
-
-    _profile(screen, f_small, profile, s,
-             ac.alt_cmd_ft if layer == "GUIDANCE" else None, foe)
+    render.topdown(screen, render.Layout.topdown, f_small, own, other, weapon,
+                   scale=scale, in_wez=in_wez, lock_frac=lock,
+                   guidance=(dict(psi_cmd=ac.psi_cmd, v_cmd_kt=ac.v_cmd_kt)
+                             if layer == "GUIDANCE" else None))
+    render.profile(screen, render.Layout.profile, f_small, own,
+                   alt_cmd_ft=ac.alt_cmd_ft if layer == "GUIDANCE" else None)
+    render.cockpit(screen, render.Layout.cockpit, (f, f_small),
+                   own, other, weapon, in_wez=in_wez, lock_frac=lock)
     _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
            layer, cmd_mode, crash, handover, throttle_cap, ramp_s, foe)
 
 
-def _profile(screen, font, profile, s, alt_cmd_ft, foe=None):
-    """Altitude against time -- the axis a top-down view cannot show.
-
-    Time rather than ground distance: in a hard turn the ground track doubles
-    back on itself and the trace becomes unreadable, while what you want to see
-    is how fast the height is being spent and bought back.
-    """
-    x0, y0, w, h = 12, PROF_TOP + 6, MAP_W - 24, PROF_H - 18
-    pygame.draw.rect(screen, (20, 23, 30), (x0, y0, w, h))
-    # Auto-scale.  A fixed 35,000 ft top flattened the trace against the ceiling
-    # and read as the aircraft running out of climb -- it is not: the bundled
-    # f16 still makes Ps = +77 ft/s at 55,000 ft on full AB.
-    peak = max((ft for _, ft in profile), default=0.0)
-    hi = max(35000.0, math.ceil((peak + 2000.0) / 5000.0) * 5000.0)
-
-    def ypx(ft):
-        return y0 + h - max(0.0, min(hi, ft)) / hi * h
-
-    for ft, col, lbl in ((ALT_MAX_FT, (60, 70, 90), "30k ceiling"),
-                         (ALT_MIN_FT, (60, 70, 90), "5k floor"),
-                         (0.0, (110, 50, 50), "ground")):
-        yy = int(ypx(ft))
-        pygame.draw.line(screen, col, (x0, yy), (x0 + w, yy), 1)
-        screen.blit(font.render(lbl, True, col), (x0 + 4, yy - 14))
-    screen.blit(font.render(f"{hi / 1000:.0f}k", True, DIM), (x0 + 4, y0 + 2))
-    if alt_cmd_ft is not None:
-        yc = int(ypx(alt_cmd_ft))
-        pygame.draw.line(screen, WARN, (x0, yc), (x0 + w, yc), 1)
-        screen.blit(font.render(f"target {alt_cmd_ft:,.0f}", True, WARN),
-                    (x0 + 4, yc + 2))
-
-    if len(profile) > 1:
-        t1 = profile[-1][0]
-        t0 = min(profile[0][0], t1 - PROFILE_WINDOW_S)
-        span = max(t1 - t0, 1e-3)
-        stride = max(1, len(profile) // 600)
-        pts = [(x0 + (t - t0) / span * w, ypx(ft)) for t, ft in profile[::stride]]
-        if len(pts) > 1:
-            pygame.draw.lines(screen, ACCENT, False, pts, 2)
-        pygame.draw.circle(screen, FG, (int(pts[-1][0]), int(pts[-1][1])), 3)
-    screen.blit(font.render(f"altitude, last {PROFILE_WINDOW_S:.0f} s"
-                            f"   now {s.h_ft:,.0f} ft", True, DIM),
-                (x0 + w - 240, y0 + 4))
 
 
-def _wez(screen, cx, cy, s, foe, scale):
-    """The gun envelope, drawn as the wedge it is.
 
-    Only the horizontal slice of it -- the real zone is a cone in 3D and the
-    referee uses the 3D angle, so a target directly above at the right range
-    looks outside this wedge and still counts.  The panel carries the numbers
-    that settle it.
-    """
-    lit = foe.eng is not None and foe.eng.in_wez
-    col = GOOD if (lit and foe.track >= foe.TRACK_LOCK) else (
-        (150, 200, 150) if lit else (58, 78, 62))
-    r_in = WEZ_R_MIN / scale
-    r_out = WEZ_R_MAX / scale
-    for side in (-1, 1):
-        a = s.psi + side * math.radians(WEZ_ATA_DEG)
-        pygame.draw.line(screen, col,
-                         (cx + math.sin(a) * r_in, cy - math.cos(a) * r_in),
-                         (cx + math.sin(a) * r_out, cy - math.cos(a) * r_out), 1)
-    for rr in (r_in, r_out):
-        if rr > 3:
-            rect = pygame.Rect(cx - rr, cy - rr, 2 * rr, 2 * rr)
-            a0 = math.pi / 2 - s.psi - math.radians(WEZ_ATA_DEG)
-            a1 = math.pi / 2 - s.psi + math.radians(WEZ_ATA_DEG)
-            pygame.draw.arc(screen, col, rect, a0, a1, 1)
-
-
-def _pipper(screen, font, cx, cy, s, foe, scale):
-    """Where to point.  The gun needs lead, so this is not the target.
-
-    Put the nose ray through the pipper and the solution is made.  Real
-    aircraft draw exactly this and it is why leading a target is a skill rather
-    than guesswork -- the first version of this tool asked for lead without
-    showing it, and three minutes of hand flying produced no shots at all.
-    """
-    e = foe.eng
-    if e is None or foe.health <= 0.0:
-        return
-    px = cx + e.aim_dx / scale
-    py = cy - e.aim_dy / scale
-    hot = e.in_wez and foe.track >= foe.TRACK_LOCK
-    col = WARN if hot else (GOOD if e.in_wez else (150, 170, 200))
-    pygame.draw.circle(screen, col, (int(px), int(py)), 9, 2)
-    pygame.draw.circle(screen, col, (int(px), int(py)), 2)
-    # tick from the target to the pipper, so the amount of lead is visible
-    tx, ty = cx + (foe.state.x - s.x) / scale, cy - (foe.state.y - s.y) / scale
-    pygame.draw.line(screen, (90, 100, 120), (tx, ty), (px, py), 1)
-
-
-def _foe_symbol(screen, font, to_px, foe, trail, scale):
-    st = foe.state
-    if len(trail) > 1:
-        stride = max(1, len(trail) // 300)
-        pts = [to_px(x, y) for x, y in trail[::stride]]
-        if len(pts) > 1:
-            pygame.draw.lines(screen, (110, 60, 60), False, pts, 2)
-    px, py = to_px(st.x, st.y)
-    col = (120, 120, 120) if foe.health <= 0 else (
-        WARN if foe.track >= foe.TRACK_LOCK else BAD)
-    pts = []
-    for ang, rad in ((0, 16), (2.5, 9), (math.pi, 4), (-2.5, 9)):
-        a = st.psi + ang
-        pts.append((px + math.sin(a) * rad, py - math.cos(a) * rad))
-    pygame.draw.polygon(screen, col, pts)
-    # a ring while the solution is held, so a hit is visible without reading
-    if foe.track >= foe.TRACK_LOCK and foe.health > 0:
-        pygame.draw.circle(screen, WARN, (px, py), 22, 2)
-    if foe.eng is not None:
-        screen.blit(font.render(f"{foe.eng.r:,.0f} m", True, col), (px + 18, py - 6))
-
-
-def _adi(screen, font, x, y, r, s):
-    """Attitude indicator.  Bank and pitch, which is what you fly a stick by.
-
-    The world rotates and the aircraft symbol is fixed: right bank tilts the
-    horizon's right end up, nose up pushes the horizon down.
-    """
-    d = 2 * r
-    surf = pygame.Surface((d, d), pygame.SRCALPHA)
-    surf.fill(SKY)
-
-    px_per_deg = r / 26.0
-    phi, theta = s.phi, math.degrees(s.theta)
-    ux, uy = math.cos(phi), -math.sin(phi)          # along the horizon
-    vx, vy = math.sin(phi), math.cos(phi)           # perpendicular, toward ground
-    hx, hy = r + vx * theta * px_per_deg, r + vy * theta * px_per_deg
-
-    L = 3 * r
-    pygame.draw.polygon(surf, GROUND, [
-        (hx - ux * L, hy - uy * L), (hx + ux * L, hy + uy * L),
-        (hx + ux * L + vx * L, hy + uy * L + vy * L),
-        (hx - ux * L + vx * L, hy - uy * L + vy * L)])
-    pygame.draw.line(surf, (235, 240, 250), (hx - ux * L, hy - uy * L),
-                     (hx + ux * L, hy + uy * L), 2)
-
-    for m in range(-60, 61, 10):
-        if m == 0:
-            continue
-        off = (theta - m) * px_per_deg
-        mx, my = r + vx * off, r + vy * off
-        half = (r * 0.30) if m % 20 == 0 else (r * 0.17)
-        pygame.draw.line(surf, (215, 222, 235), (mx - ux * half, my - uy * half),
-                         (mx + ux * half, my + uy * half), 1)
-        if m % 20 == 0:
-            surf.blit(font.render(f"{abs(m)}", True, (215, 222, 235)),
-                      (mx + ux * half + 3, my + uy * half - 7))
-
-    mask = pygame.Surface((d, d), pygame.SRCALPHA)
-    pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
-    surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-    screen.blit(surf, (x, y))
-
-    cx, cy = x + r, y + r
-    pygame.draw.circle(screen, (70, 78, 96), (cx, cy), r, 2)
-    pygame.draw.line(screen, WARN, (cx - 28, cy), (cx - 9, cy), 3)
-    pygame.draw.line(screen, WARN, (cx + 9, cy), (cx + 28, cy), 3)
-    pygame.draw.circle(screen, WARN, (cx, cy), 3)
-    for tick in (-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60):
-        a = math.radians(tick)
-        ln = 9 if tick % 30 == 0 else 5
-        pygame.draw.line(screen, DIM,
-                         (cx + math.sin(a) * r, cy - math.cos(a) * r),
-                         (cx + math.sin(a) * (r - ln), cy - math.cos(a) * (r - ln)), 1)
-    # pointer moves the way the aircraft banks
-    a = phi
-    pygame.draw.polygon(screen, GOOD, [
-        (cx + math.sin(a) * (r - 11), cy - math.cos(a) * (r - 11)),
-        (cx + math.sin(a - 0.07) * (r - 24), cy - math.cos(a - 0.07) * (r - 24)),
-        (cx + math.sin(a + 0.07) * (r - 24), cy - math.cos(a + 0.07) * (r - 24))])
 
 
 def _stick_box(screen, font, x, y, size, ctl):
@@ -979,259 +851,183 @@ def _stick_box(screen, font, x, y, size, ctl):
     screen.blit(font.render("R", True, DIM), (x + size - 11, y + mid - 7))
 
 
-def _speed_vector(screen, font, cx, cy, s, v_cmd_kt):
-    """Current and commanded speed as a bar along the direction of travel.
-
-    Length is speed, drawn on the track (where the aircraft is going, not where
-    the nose points).  A caret sits at the commanded speed, so the gap between
-    bar tip and caret is what the throttle is still working on.
-    """
-    def px(v_kt):
-        frac = (v_kt - V_MIN_KT) / (V_MAX_KT - V_MIN_KT)
-        return 34 + max(0.0, min(1.0, frac)) * 210
-
-    ux, uy = math.sin(s.track), -math.cos(s.track)      # screen up is north
-    nx, ny = uy, -ux                                    # perpendicular
-    l_now, l_cmd = px(s.v_kt), px(v_cmd_kt)
-    pygame.draw.line(screen, (44, 50, 62), (cx + ux * 34, cy + uy * 34),
-                     (cx + ux * 244, cy + uy * 244), 3)
-    col = WARN if v_cmd_kt > s.v_kt + 3 else (ACCENT if v_cmd_kt < s.v_kt - 3 else GOOD)
-    tip = (cx + ux * l_now, cy + uy * l_now)
-    pygame.draw.line(screen, col, (cx + ux * 34, cy + uy * 34), tip, 7)
-    cxx, cyy = cx + ux * l_cmd, cy + uy * l_cmd
-    pygame.draw.line(screen, FG, (cxx + nx * 12, cyy + ny * 12),
-                     (cxx - nx * 12, cyy - ny * 12), 3)
-    screen.blit(font.render(f"{v_cmd_kt:.0f}", True, FG),
-                (cxx + nx * 16 - 8, cyy + ny * 16 - 7))
-    screen.blit(font.render(f"{s.v_kt:.0f} kt", True, col),
-                (tip[0] - nx * 20 - 14, tip[1] - ny * 20 - 7))
-
-
-def _heading_target(screen, cx, cy, psi_cmd, radius=150):
-    """Where the aircraft is being told to point."""
-    bx = cx + math.sin(psi_cmd) * radius
-    by = cy - math.cos(psi_cmd) * radius
-    pygame.draw.line(screen, (70, 60, 30), (cx, cy), (bx, by), 1)
-    pygame.draw.polygon(screen, WARN, [
-        (bx + math.sin(psi_cmd) * 11, by - math.cos(psi_cmd) * 11),
-        (bx + math.sin(psi_cmd + 2.6) * 8, by - math.cos(psi_cmd + 2.6) * 8),
-        (bx + math.sin(psi_cmd - 2.6) * 8, by - math.cos(psi_cmd - 2.6) * 8)], 2)
 
 
 def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
            layer, cmd_mode, crash, handover, throttle_cap, ramp_s, foe=None):
+    """Build the readout's *content*.  `render.Readout` decides where it lands.
+
+    This used to lay itself out, adding pixel heights by hand, and it broke the
+    moment the cockpit view took 300 px off the panel -- the instruments carried
+    on drawing straight over the key help.  Now the panel is a list and the
+    renderer fits it; adding a row cannot push anything off the bottom.
+    """
     f_big, f, f_small = fonts
-    pygame.draw.rect(screen, PANEL, (MAP_W, 0, W - MAP_W, H))
-    x0, y = MAP_W + 18, 12
     c = ac.backend.controls
     stick = layer == "STICK"
+    alpha = math.degrees(s.alpha)
+    nmax = n_max(s.v_kt, s.h_ft)
+    measured = in_measured_table(s.v_kt, s.h_ft)
+    T = render.text
 
-    def line(txt, col=FG, font=None, dy=18):
-        nonlocal y
-        screen.blit((font or f).render(txt, True, col), (x0, y))
-        y += dy
-
-    line(f"FLIGHT TEST   {layer}", WARN if stick else ACCENT, f_big, 24)
-    line("tab switches layer -- guidance is bypassed" if stick
-         else f"tab switches layer -- input {cmd_mode} (m)", DIM, f_small, 16)
+    items = [T(f"FLIGHT TEST   {layer}", WARN if stick else ACCENT, big=True),
+             T("tab switches layer -- guidance is bypassed" if stick
+               else f"tab switches layer -- input {cmd_mode} (m)",
+               DIM, small=True)]
 
     if foe is not None:
-        e = foe.eng
-        dead = foe.health <= 0.0
-        line(f"TARGET  {'DESTROYED' if dead else 'health'}",
-             DIM if not dead else GOOD, f_small, 15)
+        e, dead = foe.eng, foe.health <= 0.0
         hcol = GOOD if foe.health > 0.5 else (WARN if foe.health > 0.2 else BAD)
-        _bar(screen, x0, y, 200, 11, foe.health, (90, 90, 90) if dead else hcol)
-        y += 16
+        items += [render.gap(6),
+                  render.bar(f"TARGET {'DESTROYED' if dead else 'health'}",
+                             foe.health, (90, 90, 90) if dead else hcol,
+                             f"{foe.health:.2f}")]
         if e is not None:
             hot = e.in_wez and foe.track >= foe.TRACK_LOCK
-            line(f"range {e.r:6,.0f} m    lead err {math.degrees(e.ata_lead):4.1f} deg",
-                 GOOD if e.in_wez else FG, f_small, 15)
-            line(f"aspect {math.degrees(e.aa):4.0f} deg   closing "
-                 f"{-e.r_dot:+5.0f} m/s", DIM, f_small, 15)
-            line(f"hold  {foe.track:4.2f} / {foe.TRACK_LOCK:.2f} s"
-                 + ("   HITTING" if hot else ("   IN ZONE" if e.in_wez else "")),
-                 WARN if hot else (GOOD if e.in_wez else DIM), f_small, 18)
-        y += 4
+            items += [
+                T(f"range {e.r:6,.0f} m   lead err "
+                  f"{math.degrees(e.ata_lead):4.1f} deg",
+                  GOOD if e.in_wez else FG, small=True),
+                T(f"aspect {math.degrees(e.aa):4.0f} deg   closing "
+                  f"{-e.r_dot:+5.0f} m/s", DIM, small=True),
+                T(f"hold  {foe.track:4.2f} / {foe.TRACK_LOCK:.2f} s"
+                  + ("   HITTING" if hot else ("   IN ZONE" if e.in_wez else "")),
+                  WARN if hot else (GOOD if e.in_wez else DIM), small=True)]
 
-    _adi(screen, f_small, x0, y, 92, s)
+    items.append(render.gap(8))
     if stick:
-        _stick_box(screen, f_small, x0 + 200, y + 30, 124, ctl)
+        items.append(render.custom(
+            lambda sc, x, y, w: render.stick_box(sc, f_small, x, y, 124, ctl),
+            152))
     else:
-        psi_err = math.degrees((ac.psi_cmd - s.psi + math.pi) % (2 * math.pi) - math.pi)
-        # "how much of the available turn is this target asking for" -- each law
-        # gets there differently, so read it off the bank command it produced
-        # rather than re-deriving it from gains only one of them has
         out = ac.last
-        demand = (abs(math.tan(out.phi_cmd)) / max(math.tan(out.max_bank), 1e-6)
-                  if out is not None and out.max_bank > 1e-6 else 0.0)
-        demand = min(1.0, demand)
-        ty = y + 26
-        for txt, col in (
-                (f"hdg {math.degrees(ac.psi_cmd) % 360:5.1f}", DIM),
-                (f" -> {math.degrees(s.psi) % 360:5.1f} ({psi_err:+.0f})", FG),
-                (f"spd {ac.v_cmd_kt:5.0f}", DIM),
-                (f" -> {s.v_kt:5.0f} ({s.v_kt - ac.v_cmd_kt:+.0f})", FG),
-                (f"alt {ac.alt_cmd_ft:6,.0f}", DIM),
-                (f" -> {s.h_ft:6,.0f} ({s.h_ft - ac.alt_cmd_ft:+,.0f})", FG),
-                ("", DIM),
-                (f"target asks {demand * 100:3.0f} % turn",
-                 WARN if demand > 0.95 else DIM)):
-            screen.blit(f_small.render(txt, True, col), (x0 + 200, ty))
-            ty += 15
+        # how much of the available turn this target is asking for -- read off
+        # the bank command each law produced, not re-derived from gains
+        demand = min(1.0, (abs(math.tan(out.phi_cmd))
+                           / max(math.tan(out.max_bank), 1e-6)
+                           if out is not None and out.max_bank > 1e-6 else 0.0))
+        psi_err = math.degrees(_wrap(ac.psi_cmd - s.psi))
         d_psi, d_v, d_h = act
         bits = [b for b in ((f"{d_psi:+.0f}d" if d_psi else ""),
                             (f"{d_v:+.0f}kt" if d_v else ""),
                             (f"{d_h:+.0f}ft" if d_h else "")) if b]
-        screen.blit(f_small.render("  ".join(bits) or "--", True, WARN),
-                    (x0 + 200, ty))
-    y += 196
+        items += [
+            render.head("COMMAND -> ACTUAL"),
+            T(f"hdg {math.degrees(ac.psi_cmd) % 360:5.1f} -> "
+              f"{math.degrees(s.psi) % 360:5.1f} ({psi_err:+.0f})", FG, small=True),
+            T(f"spd {ac.v_cmd_kt:5.0f} -> {s.v_kt:5.0f} "
+              f"({s.v_kt - ac.v_cmd_kt:+.0f})", FG, small=True),
+            T(f"alt {ac.alt_cmd_ft:6,.0f} -> {s.h_ft:6,.0f} "
+              f"({s.h_ft - ac.alt_cmd_ft:+,.0f})", FG, small=True),
+            T(f"asks {demand * 100:3.0f} % turn   action "
+              f"{'  '.join(bits) or '--'}",
+              WARN if demand > 0.95 else DIM, small=True)]
 
-    alpha = math.degrees(s.alpha)
-    nmax = n_max(s.v_kt, s.h_ft)
-    measured = in_measured_table(s.v_kt, s.h_ft)
-
+    items.append(render.gap(6))
     if stick:
-        # --- the alpha limiter, read out of the FLCS rather than guessed -----
-        line("PITCH -- where your command goes", DIM, f_small, 17)
         a_col = BAD if alpha >= ALPHA_HARD_DEG else (
             WARN if alpha >= ALPHA_SOFT_DEG else FG)
-        line(f"alpha    {alpha:6.1f} deg   (peak {meter.alpha:.1f})", a_col)
-        _bar(screen, x0, y, 200, 10, abs(alpha) / 20.0, a_col)
-        for mark, col in ((ALPHA_SOFT_DEG, WARN), (ALPHA_HARD_DEG, BAD)):
-            mx = x0 + int(200 * mark / 20.0)
-            pygame.draw.line(screen, col, (mx, y - 2), (mx, y + 12), 1)
-        y += 16
         auth = c["pitch_authority"]
-        line(f"authority {auth * 100:4.0f} %  what the alpha schedule leaves",
-             GOOD if auth > 0.85 else (WARN if auth > 0.6 else BAD), f_small, 15)
-        line(f"limiter  {c['pitch_limiter']:+5.2f}  pushed back against you",
-             DIM if c["pitch_limiter"] < 0.2 else WARN, f_small, 15)
-        line(f"you ask  {c['elevator_cmd']:+5.2f}   elevator gets "
-             f"{c['pitch_net']:+5.2f}", FG, f_small, 19)
+        items += [
+            render.head("PITCH -- where your command goes"),
+            render.marked_bar(f"alpha {alpha:6.1f} deg (peak {meter.alpha:.1f})",
+                              abs(alpha) / 20.0, a_col, ALPHA_HARD_DEG / 20.0),
+            T(f"authority {auth * 100:4.0f} %  what the schedule leaves",
+              GOOD if auth > 0.85 else (WARN if auth > 0.6 else BAD), small=True),
+            T(f"limiter {c['pitch_limiter']:+5.2f}   you ask "
+              f"{c['elevator_cmd']:+5.2f} -> {c['pitch_net']:+5.2f}",
+              DIM if c["pitch_limiter"] < 0.2 else WARN, small=True)]
     else:
-        line("ATTITUDE", DIM, f_small, 17)
-        line(f"alpha   {alpha:+6.1f} deg   bank {math.degrees(s.phi):+6.1f}")
-        line(f"gamma   {math.degrees(s.gamma):+6.1f} deg   (peak "
-             f"{meter.gamma:.0f})")
-        line(f"climb   {s.h_dot / 0.3048:+6.0f} ft/s  limit 250", DIM, f_small, 19)
+        # bank and pitch are in the cockpit view now; these are the numbers it
+        # cannot show to a tenth of a degree
+        items += [
+            T(f"alpha {alpha:+5.1f}   bank {math.degrees(s.phi):+6.1f}"
+              f"   gamma {math.degrees(s.gamma):+5.1f}", FG, small=True),
+            T(f"climb {s.h_dot / 0.3048:+6.0f} ft/s  limit 250", DIM, small=True)]
 
-    line("G", DIM, f_small, 17)
     n_col = BAD if abs(s.nz) > N_STRUCT else (
         WARN if s.nz > nmax * 0.97 else FG)
-    line(f"Nz      {s.nz:6.2f} g   of {nmax:.2f} available"
-         f"{'' if measured else ' ?'}", n_col)
-    _bar(screen, x0, y, 200, 10, abs(s.nz) / N_STRUCT, n_col)
-    nx = x0 + int(200 * min(1.0, nmax / N_STRUCT))
-    pygame.draw.line(screen, WARN if measured else DIM, (nx, y - 2), (nx, y + 12), 2)
-    y += 16
-    if meter.overstress_s > 0.05:
-        # the bundled f16 has no g limiter of its own -- guidance plans against
-        # N_STRUCT (D25) but the stick can simply exceed it
-        line(f"peak {meter.nz:.2f} g   OVER {N_STRUCT:.0f} g FOR "
-             f"{meter.overstress_s:.1f} s", BAD, f_small, 19)
-    elif not measured:
-        # n_max clamps at the edge of the measured grid instead of
-        # extrapolating, so up here the reference has stopped moving
-        line(f"peak {meter.nz:.2f} g   | frozen: outside the measured table",
-             WARN, f_small, 19)
-    else:
-        line(f"peak {meter.nz:.2f} g   | = what this speed and height allow",
-             DIM, f_small, 19)
-
-    # --- what speed AND height are worth -------------------------------------
-    mb = max_bank_deg(s.v_kt, s.h_ft)
+    note = ("OVER LIMIT" if meter.overstress_s > 0.05 else
+            ("? off the measured table" if not measured
+             else f"peak {meter.nz:.2f}"))
     turn_cap = level_turn_rate_deg_s(s.v_kt, s.h_ft)
     turn_low = level_turn_rate_deg_s(s.v_kt, ALT_MIN_FT)
-    line("WHAT THIS SPEED AND HEIGHT ALLOW", DIM, f_small, 17)
-    line(f"speed   {s.v_kt:6.0f} kt   max bank {mb:4.1f}", DIM, f_small, 15)
-    _bar(screen, x0, y, 200, 9, (s.v_kt - V_MIN_KT) / (V_MAX_KT - V_MIN_KT), ACCENT)
-    y += 14
-    line(f"turn cap {turn_cap:5.1f} deg/s   now {abs(meter.turn_rate):4.1f}",
-         WARN if turn_cap < 9 else FG)
-    _bar(screen, x0, y, 200, 10, turn_cap / 18.0, WARN if turn_cap < 9 else GOOD)
-    _bar(screen, x0, y + 11, 200, 5, abs(meter.turn_rate) / 18.0, ACCENT)
-    # the marker is the same speed flown at the floor: the gap is what the
-    # altitude being held costs in turn performance right now
-    lx = x0 + int(200 * min(1.0, turn_low / 18.0))
-    pygame.draw.line(screen, (200, 120, 200), (lx, y - 3), (lx, y + 12), 2)
-    y += 19
-    line(f"| {turn_low:.1f} at the 5k floor -- what diving buys",
-         DIM, f_small, 19)
+    items += [
+        render.gap(6),
+        render.marked_bar(f"Nz {s.nz:5.2f} g of {nmax:.2f}   {note}",
+                          abs(s.nz) / N_STRUCT, n_col,
+                          min(1.0, nmax / N_STRUCT)),
+        render.marked_bar(f"turn cap {turn_cap:5.1f} deg/s   "
+                          f"now {abs(meter.turn_rate):4.1f}",
+                          turn_cap / 18.0, WARN if turn_cap < 9 else GOOD,
+                          min(1.0, turn_low / 18.0), f"{turn_low:.1f} at 5k"),
+        render.bar(f"speed {s.v_kt:5.0f} kt   max bank "
+                   f"{max_bank_deg(s.v_kt, s.h_ft):4.1f}",
+                   (s.v_kt - V_MIN_KT) / (V_MAX_KT - V_MIN_KT), ACCENT)]
 
-    # --- energy: how much, where it is kept, which way it is going -----------
-    line("ENERGY  Eh = h + V^2/2g", DIM, f_small, 17)
-    pot = _clamp(meter.e_pot_ft / EH_FULL_FT, 0.0, 1.0)
-    kin = _clamp(meter.e_kin_ft / EH_FULL_FT, 0.0, 1.0 - pot)
-    pygame.draw.rect(screen, (45, 50, 62), (x0, y, 200, 15))
-    pygame.draw.rect(screen, HEIGHT_BLUE, (x0, y, int(200 * pot), 15))
-    pygame.draw.rect(screen, WARN, (x0 + int(200 * pot), y, int(200 * kin), 15))
-    gx = x0 + int(200 * _clamp(meter.e_ghost_ft / EH_FULL_FT, 0.0, 1.0))
-    pygame.draw.line(screen, FG, (gx, y - 3), (gx, y + 17), 2)
-    y += 20
-    line(f"{meter.e_tot_ft:6,.0f} ft  (5 s ago {meter.e_ghost_ft:,.0f})",
-         GOOD if meter.e_tot_ft > meter.e_ghost_ft - 30 else BAD, f_small, 15)
-    line(f"blue {meter.e_pot_ft:,.0f} height + orange {meter.e_kin_ft:,.0f} speed",
-         DIM, f_small, 17)
     ps = meter.ps_fps
     p_col = GOOD if ps > 5 else (BAD if ps < -5 else FG)
-    line(f"Ps      {ps:+6.0f} ft/s  "
-         f"{'gaining' if ps > 5 else ('BLEEDING' if ps < -5 else 'neutral')}",
-         p_col)
-    line(f"        {meter.accel_kt_s(s.v_kt):+6.1f} kt/s if none goes to height",
-         p_col, f_small, 18)
+    items += [
+        render.gap(6),
+        render.marked_bar("energy  Eh = h + V^2/2g",
+                          _clamp(meter.e_tot_ft / EH_FULL_FT, 0.0, 1.0),
+                          HEIGHT_BLUE,
+                          _clamp(meter.e_ghost_ft / EH_FULL_FT, 0.0, 1.0),
+                          f"{meter.e_tot_ft:,.0f} ft"),
+        T(f"Ps {ps:+5.0f} ft/s "
+          f"{'gaining' if ps > 5 else ('BLEEDING' if ps < -5 else 'neutral')}"
+          f"  = {meter.accel_kt_s(s.v_kt):+.1f} kt/s level", p_col, small=True)]
 
-    # --- what actually reached JSBSim ----------------------------------------
-    line("JSBSIM INPUTS   fcs/*-cmd-norm  ->  surface", DIM, f_small, 16)
-    for label, cmd, deg in (("aileron ", c["aileron_cmd"], c["aileron_deg"]),
-                            ("elevator", c["elevator_cmd"], c["elevator_deg"]),
-                            ("rudder  ", c["rudder_cmd"], c["rudder_deg"])):
-        col = BAD if abs(cmd) > 0.98 else FG
-        screen.blit(f_small.render(label, True, DIM), (x0, y + 2))
-        _bar2(screen, x0 + 58, y, 96, 12, cmd, col)
-        screen.blit(f_small.render(f"{cmd:+5.2f}", True, col), (x0 + 160, y + 1))
-        screen.blit(f_small.render(f"{deg:+6.1f}d", True, DIM), (x0 + 208, y + 1))
-        y += 15
-    thr, pos = c["throttle_cmd"], c["throttle_pos"]
-    screen.blit(f_small.render("throttle", True, DIM), (x0, y + 2))
-    capped = (not stick) and thr >= throttle_cap - 1e-6
-    _bar(screen, x0 + 58, y, 96, 12, thr, WARN if capped or pos > 1.0 else GOOD)
-    # solid line where the cap bites, faint where it is only drawn for reference
-    pygame.draw.line(screen, DIM if stick else FG,
-                     (x0 + 58 + int(96 * throttle_cap), y - 2),
-                     (x0 + 58 + int(96 * throttle_cap), y + 14), 1 if stick else 2)
-    pygame.draw.line(screen, DIM, (x0 + 58 + 48, y + 12), (x0 + 58 + 48, y + 16), 1)
-    screen.blit(f_small.render(f"{thr:5.2f}", True, FG), (x0 + 160, y + 1))
-    screen.blit(f_small.render(f"pos {pos:.2f}{' AB' if pos > 1.0 else ''}", True,
-                               WARN if pos > 1.0 else DIM), (x0 + 200, y + 1))
-    y += 17
-    line(f"| cap {throttle_cap:.2f}" + ("  (not enforced in STICK)" if stick
-                                        else "  D23 balance knob, not physics"),
-         DIM, f_small, 16)
+    def _inputs(sc, x, y, w):
+        yy = y
+        for label, cmd, deg in (("aileron ", c["aileron_cmd"], c["aileron_deg"]),
+                                ("elevator", c["elevator_cmd"], c["elevator_deg"]),
+                                ("rudder  ", c["rudder_cmd"], c["rudder_deg"])):
+            col = BAD if abs(cmd) > 0.98 else FG
+            sc.blit(f_small.render(label, True, DIM), (x, yy + 2))
+            _bar2(sc, x + 58, yy, 96, 12, cmd, col)
+            sc.blit(f_small.render(f"{cmd:+5.2f}", True, col), (x + 160, yy + 1))
+            sc.blit(f_small.render(f"{deg:+6.1f}d", True, DIM), (x + 208, yy + 1))
+            yy += 15
+        thr, pos = c["throttle_cmd"], c["throttle_pos"]
+        capped = (not stick) and thr >= throttle_cap - 1e-6
+        sc.blit(f_small.render("throttle", True, DIM), (x, yy + 2))
+        _bar(sc, x + 58, yy, 96, 12, thr, WARN if capped or pos > 1.0 else GOOD)
+        cx = x + 58 + int(96 * throttle_cap)
+        pygame.draw.line(sc, DIM if stick else FG, (cx, yy - 2), (cx, yy + 14),
+                         1 if stick else 2)
+        sc.blit(f_small.render(f"{thr:5.2f}  pos {pos:.2f}"
+                               + (" AB" if pos > 1.0 else ""), True,
+                               WARN if pos > 1.0 else FG), (x + 160, yy + 1))
 
-    y = H - 102
-    # Same keys in both layers, one exception: W/8 is stick-forward here and a
-    # climb over there.  Name the direction so tab cannot catch you out.
-    if stick:
-        line("W/8 NOSE DOWN   X/2 nose up   A D roll", WARN, f_small, 14)
-        line(f"Q E rudder   Z C throttle   S centre   ramp {ramp_s:.2f}s",
-             DIM, f_small, 14)
-    else:
-        line("W/8 CLIMB   X/2 descend   A D heading", GOOD, f_small, 14)
-        line("Z C speed   S freeze targets   m CONTINUOUS/DISCRETE", DIM, f_small, 14)
-        line("shift = coarse (10 deg / 100 ft / 20 kt)", DIM, f_small, 14)
-    line("tab layer   p pause   r reset   esc quit", DIM, f_small, 14)
-    line(f"+ - zoom ({scale:.0f} m/px)   g trail", DIM, f_small, 14)
+    items += [render.gap(6), render.head("JSBSIM INPUTS  cmd-norm -> surface"),
+              render.custom(_inputs, 66)]
+
     rt_col = GOOD if rtf > 0.92 else (WARN if rtf > 0.7 else BAD)
-    line(f"t = {s.t:6.1f} s   real time x{rtf:.2f}"
-         + (f"   tacview {'up' if live.connected else 'waiting'}" if live else ""),
-         rt_col, f_small, 14)
+    if stick:
+        keys = [T("W/8 NOSE DOWN  X/2 nose up  A D roll", WARN, small=True),
+                T(f"Q E rudder  Z C throttle  S centre  ramp {ramp_s:.2f}s",
+                  DIM, small=True)]
+    else:
+        keys = [T("W/8 CLIMB  X/2 descend  A D heading  Z C speed",
+                  GOOD, small=True),
+                T("S freeze  m CONT/DISC  shift coarse", DIM, small=True)]
+    pinned = keys + [
+        T("BACKSPACE new random engagement   p pause", DIM, small=True),
+        T(f"tab layer  esc quit  + - zoom ({scale:.0f} m/px)  g trail",
+          DIM, small=True),
+        T(f"t = {s.t:6.1f} s   real time x{rtf:.2f}"
+          + (f"   tacview {'up' if live.connected else 'waiting'}" if live else ""),
+          rt_col, small=True)]
 
+    render.Readout(screen, fonts).draw(items, pinned)
+
+    # --- overlays on the map, not the panel ---------------------------------
     if crash is not None:
         box = pygame.Rect(MAP_W // 2 - 210, 26, 420, 58)
         pygame.draw.rect(screen, (60, 20, 24), box)
         pygame.draw.rect(screen, BAD, box, 2)
-        screen.blit(f_big.render("CRASHED   r to reset", True, BAD),
+        screen.blit(f_big.render("CRASHED   BACKSPACE to restart", True, BAD),
                     (box.x + 16, box.y + 8))
         screen.blit(f_small.render(
             f"t {crash[0]:.1f} s   {crash[1]:.0f} kt   gamma {crash[2]:+.0f} deg"
@@ -1241,13 +1037,11 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
                     (MAP_W // 2 - 60, 26))
     elif s.h_ft < 2000:
         screen.blit(f_big.render("PULL UP", True, BAD), (MAP_W // 2 - 44, 30))
-    if paused:
+    if foe is not None and foe.health <= 0.0:
+        screen.blit(f_big.render("TARGET DOWN   BACKSPACE for a new one", True,
+                                 GOOD), (MAP_W // 2 - 210, 62))
+    elif paused:
         screen.blit(f_big.render("PAUSED", True, WARN), (MAP_W // 2 - 44, 62))
-
-
-def _ray(screen, cx, cy, ang, length, col, width):
-    pygame.draw.line(screen, col, (cx, cy),
-                     (cx + math.sin(ang) * length, cy - math.cos(ang) * length), width)
 
 
 def _bar(screen, x, y, w, h, frac, col):
