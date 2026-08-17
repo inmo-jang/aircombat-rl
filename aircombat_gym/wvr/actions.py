@@ -2,15 +2,30 @@
 
     Discrete(27) = heading 3 x speed 3 x altitude 3
 
-Every channel is three-valued -- back off, hold, push -- and an assignment opens
-only the ones it wants (`wvr/envs/base.py`).  Assignment 01 closes the vertical and
-gets `Discrete(9)`.
+Every channel is three-valued -- back off, hold, push -- and a task opens only
+the ones it wants (`wvr/envs/base.py`).  **Every task shipped today closes the
+vertical, so the only space a student ever sees is `Discrete(9)`.**  27 is the
+ceiling, reachable by opening `ALTITUDE`, and nothing does yet.
 
-The observation spec used to live here too: an 18-channel egocentric vector
-frozen as `OBS_SPEC_VERSION = 5`.  It went out on 2026-08-11 with the
-`DogfightEnv` that was its only consumer, replaced by the raw 37-channel
-`aircombat_gym/wvr/obs.py`.  Its numbers survive in report_260810.md and
-report_260811.md; nothing in the package reads them.
+**Why one flat `Discrete` and not `MultiDiscrete([3, 3])`.**  The factored space
+is the better description -- the axes are independent, and a network with one
+head per axis learns "turn left" once instead of once per speed setting, because
+in the flat space `(-30, +20)` and `(-30, -20)` are unrelated labels under a
+single softmax.  Gymnasium has the type for exactly this, and LAG uses it
+(`MultiDiscrete([41, 41, 41, 30])` for its four control channels).
+
+It is flattened here for one reason: **Stable-Baselines3's DQN accepts
+`Discrete` and nothing else.**  PPO and A2C take `MultiDiscrete`; DQN does not,
+and DQN is the algorithm this environment is taught with, so a factored space
+would fail on the first line a student writes.  Flattening is also ordinary --
+Atari's `Discrete(18)` is 9 joystick directions times fire.
+
+The cost is a product rather than a sum, and it is affordable at 9 and at 27.
+If the vertical opens *and* a weapon channel arrives, 81 or 162 is the point to
+revisit this -- by then the course would have to be PPO-only anyway.
+
+The observation spec is not here: it is `wvr/obs.py`, because it is the same for
+every task while the open axes are not.
 
 Two configurations were dropped on the way here, both from the 2D version:
 

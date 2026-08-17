@@ -1,12 +1,27 @@
-"""Assignment 01 -- kill a loitering target.
+"""`AirCombat/Circular-v0` -- kill a loitering target.
 
     import gymnasium as gym, aircombat_gym.wvr.envs
     env = gym.make("AirCombat/Circular-v0")
 
-Red holds 20,000 ft, turns at a fixed average rate drawn from 1-5 deg/s, flies
-at 325 kt, and never shoots.  Blue spawns on a random bearing 1.5-4 km out,
-pointed roughly at it, at the same altitude.  Blue wins by holding the firing
-envelope; nothing else ends the episode except the 120 s clock.
+The learner is **red**, as in every task; the target is **blue**.
+
+Blue holds 20,000 ft, turns at a fixed average rate drawn from 1-5 deg/s and
+flies at 325 kt.  Red spawns on a random bearing 1.5-4 km out, pointed roughly
+at it, at the same altitude.  Red wins by holding the firing envelope; the only
+other end is the 120 s clock.
+
+Blue never *aims*, but it keeps its gun, on purpose.  It cannot manoeuvre for a
+shot -- its heading is on rails -- so it is no threat to a policy that stays out
+of its windscreen, and every death is one red flew into.  That is a lesson worth
+charging for at rung 1, and it costs almost nothing: 0.16 s of solution per match
+against `ace`, 0.32 s against a random policy, one kill in twelve random matches.
+Part of the 0.26 random baseline is those deaths rather than timeouts.
+
+`foe_armed = False` would disarm it.  Nothing on the ladder uses that now:
+`Evader` did, on the argument that a target which runs gets its nose onto
+things in a way one on rails cannot, and that is still true -- but a uniform
+rule across every rung was judged worth more than the guarantee, so `Evader`
+is armed too and its baselines were re-measured against the armed target.
 
 Every number below was measured before the task was fixed; the workings are in
 `project_01_circular.md`.  The three that were not free choices:
@@ -26,8 +41,9 @@ Every number below was measured before the task was fixed; the workings are in
               still separable.
   flat damage the honest weapon scales damage by aim error, range and aspect at
               once, so a student cannot work out how long to hold the shot.  A
-              constant 1.0/s after a 1.0 s lock means exactly one thing: hold it
-              for two seconds.
+              constant 0.33/s after a 1.0 s lock means exactly one thing: hold
+              it for three seconds after earning it, four in all.  Every task on
+              the ladder uses the same number.
 """
 from __future__ import annotations
 
@@ -37,35 +53,35 @@ from ..baselines import Circler
 from .base import HEADING, SPEED, Initial, TaskEnv
 
 ALT_FT = 20_000.0                       # both aircraft, fixed
-RED_SPEED_KT = 325.0
+FOE_SPEED_KT = 325.0
 TURN_LO, TURN_HI = 1.0, 5.0             # deg/s, average; sign random
 RANGE_LO_M, RANGE_HI_M = 1500.0, 4000.0
-HEADING_CONE_DEG = 90.0                 # blue's heading, either side of the LOS
-BLUE_SPEED_LO_KT, BLUE_SPEED_HI_KT = 300.0, 600.0
+HEADING_CONE_DEG = 90.0                 # red's heading, either side of the LOS
+OWN_SPEED_LO_KT, OWN_SPEED_HI_KT = 300.0, 600.0
 
 
 class CircularTargetEnv(TaskEnv):
-    """Assignment 01.  `Discrete(9)` = heading 3 x speed 3, or `Box(2)`."""
+    """`Discrete(9)` = heading 3 x speed 3, or `Box(2)`."""
 
     channels = (HEADING, SPEED)         # the vertical is closed
     t_max = 120.0
     track_lock = 1.0                    # seconds to earn the shot
-    flat_damage = 1.0                   # then 1.0 s of firing to kill
+    flat_damage = 0.33                  # then 3.0 s of firing to kill
     wez_cone_deg = 30.0
-    lose_on_exit = False                # no arena; leaving is not a loss
+    foe_armed = True                    # stated, not inherited -- see above
 
     def sample(self, rng):
         r = rng.uniform(RANGE_LO_M, RANGE_HI_M)
         bearing = rng.uniform(-math.pi, math.pi)
         bx, by = r * math.sin(bearing), r * math.cos(bearing)
-        toward_red = math.atan2(-bx, -by)
-        psi = toward_red + rng.uniform(-math.radians(HEADING_CONE_DEG),
+        toward_foe = math.atan2(-bx, -by)
+        psi = toward_foe + rng.uniform(-math.radians(HEADING_CONE_DEG),
                                        math.radians(HEADING_CONE_DEG))
         ic = Initial(
             "circular",
-            ((bx, by), (0.0, 0.0)),                  # blue is red-relative
+            ((bx, by), (0.0, 0.0)),                  # red is placed relative to blue
             (math.degrees(psi), 0.0),
-            (rng.uniform(BLUE_SPEED_LO_KT, BLUE_SPEED_HI_KT), RED_SPEED_KT),
+            (rng.uniform(OWN_SPEED_LO_KT, OWN_SPEED_HI_KT), FOE_SPEED_KT),
             (ALT_FT, ALT_FT),
         )
         rate = rng.uniform(TURN_LO, TURN_HI)

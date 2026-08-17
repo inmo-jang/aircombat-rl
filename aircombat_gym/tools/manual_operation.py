@@ -1,15 +1,22 @@
-"""Keyboard flight test.  Both control layers, one aircraft, `tab` to switch.
+"""The flight-model bench.  Both control layers, one aircraft, `tab` to switch.
 
-  STICK      you drive the control surfaces and guidance is bypassed.  This is
-             the f16 FLCS and nothing of ours.
-  GUIDANCE   you set (heading, speed, altitude) and the controller works out
-             bank, g and throttle.  This is the interface a student policy sees.
+**This is not the tool for feeling the gym.**  `aircombat_gym.wvr.play` is: it
+goes through `env.step()` with the task's own action space, so what you feel
+there is what a policy is up against.  This bench is for the layer underneath --
+the airframe, the FLCS, and the autopilot on top of them -- and most of what it
+can do is something no policy can ask for.  Use it to answer "what is the
+aircraft capable of, and what does the controller do with my command".
 
-Switching hands the aircraft over live, which is the test neither layer can run
-on its own: put it inverted in a 60 deg dive with the stick, press tab, and see
-whether guidance gets it back.  Gate C4 shakes the guidance layer with random
-commands but can never reach that attitude, because it never leaves the
-guidance envelope in the first place.  An untrained policy will.
+  STICK      you drive the control surfaces and the autopilot is bypassed.
+             This is the f16 FLCS and nothing of ours.
+  AUTOPILOT  you set (heading, speed, altitude) and the controller works out
+             bank, g and throttle.  This is the interface a policy commands
+             through, one level above the action space itself.
+
+`tab` hands the aircraft over live, which is the test neither layer can run on
+its own: put it inverted in a 60 deg dive with the stick, press tab, and see
+whether the autopilot gets it back.  An untrained policy will reach attitudes
+the autopilot's own test never leaves its envelope to find.
 
 Three things about the stick surprise everyone, all measured:
 
@@ -39,7 +46,7 @@ Delete work too: they are what the keypad sends with NumLock off.
       Z X C          1 2 3        throttle+  /  vertical  /  throttle-
                      0 .          (also throttle + / -)
 
-  axis          STICK                    GUIDANCE
+  axis          STICK                    AUTOPILOT
   A / D  4 / 6  roll left / right        heading -/+
   W      8      pitch PUSH, nose DOWN    altitude UP, climb
   X      2      pitch pull, nose up      altitude down
@@ -49,36 +56,39 @@ Delete work too: they are what the keypad sends with NumLock off.
   shift         skip the ramp            coarse steps (10 deg / 100 ft / 20 kt)
   m             --                       CONTINUOUS <-> DISCRETE
 
-  tab             STICK <-> GUIDANCE
+  tab             STICK <-> AUTOPILOT
   BACKSPACE       new random engagement (full reset)
   p / esc         pause / quit
   + - / g         zoom / trail length
 
 The vertical axis is the one place the layers disagree, on purpose: W is
-stick-forward in STICK (nose down) and the altitude target going up in GUIDANCE.
+stick-forward in STICK (nose down) and the altitude target going up in AUTOPILOT.
 Stick convention against autopilot convention -- they really are opposite, so
 the panel spells out which one is live.
 
-GUIDANCE takes commands two ways, `m` toggles.  Both are the human acting on the
-aircraft; what differs is the grain, and the pair exists so a student can feel
-what a continuous and a discrete action space are like before choosing one.
+AUTOPILOT takes commands two ways and `m` toggles.  What differs is the grain,
+and keeping both is most of the point: feeling how coarse the policy's grid is
+*against* a control you can place exactly is what `wvr/play` cannot show you,
+because it only has the grid.
 
   CONTINUOUS  keys move the setpoint itself, finely, and it stays where you left
               it -- turn strength is how far ahead you put it.  A tap nudges and
-              holding sweeps: heading 2 deg a press and 40 deg/s held, altitude
-              25 ft and 500 ft/s, speed 5 kt and 100 kt/s.  (Aviation calls these
-              markers "bugs"; the students here are not pilots, so the panel says
-              target.)  Nothing in the gym exposes this as a policy interface --
-              it is a piloting aid and a demonstration.
+              holding sweeps: heading 2 deg / 40 deg/s, altitude 25 ft /
+              500 ft/s, speed 5 kt / 100 kt/s.  A piloting aid; no policy has
+              this interface.
   DISCRETE    keys emit the action deltas a policy emits, at the decision rate:
-              heading +-30 deg, speed +-20 kt, altitude +-1000 ft.  Tapping lands
-              the turn; holding re-derives the target from the current state
-              every step, so the aircraft never catches up and the manoeuvre is
-              sustained.  This is `wvr/actions.py` and nothing else.
+              heading +-30 deg, speed +-20 kt, altitude +-1000 ft.  Tapping
+              lands the turn; holding re-derives the target from the current
+              state every step, so the aircraft never catches up and the
+              manoeuvre is sustained.  This is `wvr/actions.py` and nothing else.
 
 `--tacview` serves TacView Advanced over TCP; it is Windows-only, so drop it on
 macOS and Linux and the pygame panel is all of it.  `--acmi` records a file
 anywhere and plays back in the free viewer.
+
+`--enemy` puts a scripted opponent up, refereed by `envs.base.Combat` -- the
+same weapon, the same lock and both barrels, so a shot that tells here tells
+there.  The bench used to keep its own books and they had drifted apart.
 
   python -m aircombat_gym.tools.manual_operation --tacview --enemy circler
   python -m aircombat_gym.tools.manual_operation --mode stick --acmi flight.acmi
@@ -95,10 +105,10 @@ import time
 import pygame
 
 from ..core.aircraft import DECISION_HZ, SUBSTEPS, Aircraft
-from ..core.control.guidance import Guidance, wrap_pi as _wrap
-from ..wvr.engagement import (MUZZLE_MS, WEZ_ATA_DEG, WEZ_R_MAX, WEZ_R_MIN,
-                              look)
+from ..core.control.autopilot import Autopilot, wrap_pi as _wrap
+from ..wvr.engagement import MUZZLE_MS, WEZ_ATA_DEG, WEZ_R_MAX, WEZ_R_MIN
 from ..wvr.baselines import BY_NAME as OPPONENTS
+from ..wvr.envs.base import ARENA_R, SIDES, Combat, DuelEnv
 from ..core.envelope import (ALT_MAX_FT, ALT_MIN_FT, G, H0_FT, N_STRUCT,
                         THROTTLE_CAP, V_MAX_KT, V_MIN_KT, in_measured_table,
                         level_turn_rate_deg_s, max_bank_deg, n_max)
@@ -109,8 +119,6 @@ from .render import ACCENT, BAD, BG, DIM, FG, GOOD, WARN
 
 # Geometry comes from `render.Layout` so this tool and `auto_operation` cannot
 # drift apart.  The aliases keep the rest of the file readable.
-W, H = render.W, render.H
-MAP_W = render.MAP_W
 PROFILE_WINDOW_S = render.PROFILE_WINDOW_S
 # full scale for the energy bar: the ceiling plus the speed limit as height
 EH_FULL_FT = 50000.0
@@ -118,7 +126,7 @@ EH_FULL_FT = 50000.0
 HEIGHT_BLUE = (80, 120, 200)
 
 TRAIL_LENGTHS = (600, 2400, 0)          # 0 = unlimited
-LAYERS = ("STICK", "GUIDANCE")
+LAYERS = ("STICK", "AUTOPILOT")
 CMD_MODES = ("CONTINUOUS", "DISCRETE")
 
 # --- stick: how fast a key press becomes deflection --------------------------
@@ -137,7 +145,7 @@ CMD_MODES = ("CONTINUOUS", "DISCRETE")
 # So the whole useful range lives inside half a second of keypress, which is
 # why it feels twitchy.  A slower ramp spreads the same range over more time; it
 # does not make roll less sensitive, because the sensitivity is the rate command
-# itself.  Nothing holds a bank angle here -- that is what GUIDANCE is for.
+# itself.  Nothing holds a bank angle here -- that is what AUTOPILOT is for.
 # `--ramp` sets the seconds to full so the feel can be settled by flying it.
 RAMP_TO_FULL_S = 0.40   # default; --ramp overrides
 RAMP_DOWN = 5.0         # per second back to centre when released (spring)
@@ -146,12 +154,12 @@ THROTTLE_RATE = 0.40    # per second (shift: 3x) -- a lever, it stays put
 ALPHA_SOFT_DEG = 13.0   # where the schedule has started to bite noticeably
 ALPHA_HARD_DEG = 15.5   # measured plateau under full aft stick below 450 kt
 
-# --- guidance: CONTINUOUS-mode increments ------------------------------------
+# --- autopilot: CONTINUOUS-mode increments ------------------------------------
 # Deliberately NOT the action table.  CONTINUOUS mode is a piloting aid and
 # wants fine resolution per press with speed from key repeat; DISCRETE is the
 # frozen action space and uses actions.DELTA_*.
 #
-# Sized against what the aircraft can do.  Guidance asks for the full available
+# Sized against what the aircraft can do.  Autopilot asks for the full available
 # turn rate at 30 deg of heading error and turns at at most ~13 deg/s, so at
 # 20 Hz repeat 2 deg a press sweeps the target at 40 deg/s: under a second of
 # held key outruns the aircraft and establishes a maximum-rate turn, while one
@@ -168,12 +176,12 @@ KEY_REPEAT_MS = (220, 50)           # delay, interval -> 20 Hz while held
 
 # --- one key set, four axes, both layers -------------------------------------
 # The two layers are the same three axes at different levels -- that is what the
-# guidance chain *is*: the heading loop drives bank, the altitude loop drives Nz,
+# autopilot chain *is*: the heading loop drives bank, the altitude loop drives Nz,
 # the speed loop drives throttle.  So a key moves the same axis whichever layer
 # is flying, and only the level of abstraction changes.  Rudder is the one extra
 # and it barely does anything (5 s of full pedal moves the heading 1.6 deg).
 #
-#   axis          STICK            GUIDANCE       QWE/ASD/ZXC   keypad
+#   axis          STICK            AUTOPILOT       QWE/ASD/ZXC   keypad
 #   lateral       roll             heading        A / D         4 / 6
 #   vertical      pitch            altitude       W / X         8 / 2
 #   longitudinal  throttle         speed          Z / C         1 / 3, 0 / .
@@ -186,7 +194,7 @@ KEY_REPEAT_MS = (220, 50)           # delay, interval -> 20 Hz while held
 # to the same axes makes NumLock stop mattering.
 #
 # ONE ASYMMETRY, deliberate: the vertical axis is inverted in STICK only.
-# W is stick-forward -- nose down, descend -- while in GUIDANCE W raises the
+# W is stick-forward -- nose down, descend -- while in AUTOPILOT W raises the
 # altitude nudge.  Stick convention against autopilot-nudge convention; they really
 # are opposite, so the panel names the direction in both layers.
 AXES = {
@@ -249,15 +257,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--alt", type=float, default=H0_FT,
                     help="starting altitude, ft (the band is 5,000-30,000)")
     ap.add_argument("--mode", choices=[m.lower() for m in LAYERS],
-                    default="guidance", help="which layer to start in")
+                    default="autopilot", help="which layer to start in")
     ap.add_argument("--throttle-cap", type=float, default=THROTTLE_CAP,
-                    help="guidance throttle ceiling (D23 game balance knob, not "
+                    help="autopilot throttle ceiling (D23 game balance knob, not "
                          "physics; 1.0 is full afterburner).  STICK is never "
                          "capped -- that layer is about the airframe")
     ap.add_argument("--enemy", choices=["none", *OPPONENTS], default="none",
                     help="put a target up.  'circler' holds 20,000 ft and half "
                          "top speed and turns one way forever -- rung 1 of the "
-                         "ladder.  It does not shoot back yet")
+                         "ladder.  It carries the same gun you do")
     ap.add_argument("--enemy-range", type=float, default=2500.0,
                     help="how far ahead the target starts, metres")
     ap.add_argument("--seed", type=int, default=None,
@@ -284,8 +292,21 @@ def main(argv: list[str] | None = None) -> int:
                          "flies, and TacView can attach whenever you open it")
     args = ap.parse_args(argv)
 
-    ac = Aircraft(h0_ft=args.alt,
-                  guidance=Guidance(h0_ft=args.alt, throttle_cap=args.throttle_cap))
+    # One referee for both aircraft, carrying the tasks' weapon rather than a
+    # second opinion about it.  The aircraft are swapped in afterwards because
+    # `Combat` builds plain ones and this bench wants its own altitude and its
+    # own throttle cap -- the cap is what `--throttle-cap` is for, and STICK is
+    # deliberately never capped.
+    combat = Combat(t_max=1e9, track_lock=DuelEnv.track_lock,
+                    flat_damage=DuelEnv.flat_damage,
+                    wez_cone_deg=args.cone, arena_m=ARENA_R,
+                    armed=SIDES if args.enemy != "none" else ("red",))
+    combat.ac["red"] = Aircraft(
+        h0_ft=args.alt,
+        autopilot=Autopilot(h0_ft=args.alt, throttle_cap=args.throttle_cap))
+    combat.ac["blue"] = Aircraft(
+        h0_ft=H0_FT, autopilot=Autopilot(h0_ft=H0_FT, throttle_cap=1.0))
+    ac = combat.ac["red"]
     ac.reset(v_kt=args.speed)
     if not ac.backend.trim_ok:
         print(f"warning: level trim did not converge at {args.speed} kt "
@@ -298,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
 
         Straight ahead every time is right for a first look and wrong for
         practice: you learn the one approach and nothing about converting an
-        arbitrary start, which is the whole of assignment 01.  BACKSPACE draws
+        arbitrary start, which is the whole of `Circular`.  BACKSPACE draws
         a new one.
         """
         if args.enemy == "none":
@@ -320,8 +341,9 @@ def main(argv: list[str] | None = None) -> int:
             psi = rng.uniform(-math.pi, math.pi)
             if hasattr(bot, "rate"):        # Circler: a fresh turn rate too
                 bot.rate = rng.uniform(1.0, 5.0) * rng.choice((-1.0, 1.0))
-        return _Foe(bot, h0_ft=H0_FT, v_kt=0.5 * V_MAX_KT,
-                    x=x, y=y, psi=psi, cone_deg=args.cone)
+        combat.ac["blue"].reset(x=x, y=y, psi=psi, v_kt=0.5 * V_MAX_KT)
+        combat._zero()
+        return _Foe(bot, combat)
 
     foe = _spawn_foe()
     foe_trail: list[tuple[float, float]] = []
@@ -373,14 +395,14 @@ def main(argv: list[str] | None = None) -> int:
     running = True
 
     def to_stick():
-        """Guidance -> stick: pick the lever up where the controller left it."""
+        """Autopilot -> stick: pick the lever up where the controller left it."""
         out = ac.last
         if out is not None:
             ctl.update(aileron=out.aileron, elevator=out.elevator,
                        rudder=out.rudder, throttle=out.throttle)
 
-    def to_guidance():
-        """Stick -> guidance: aim at what we already have, then let it fly.
+    def to_autopilot():
+        """Stick -> autopilot: aim at what we already have, then let it fly.
 
         Without this the controller inherits whatever targets were last set and
         hauls for them from an attitude that has nothing to do with them.  The
@@ -390,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         ac.psi_cmd = s.psi
         ac.v_cmd_kt = _clamp(s.v_kt, V_MIN_KT, V_MAX_KT)
         ac.alt_cmd_ft = _clamp(s.h_ft, ALT_MIN_FT, ALT_MAX_FT)
-        ac.guidance.reset()
+        ac.autopilot.reset()
 
     while running:
         now = time.perf_counter()
@@ -413,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
                     running = False
                 elif e.key == pygame.K_TAB:
                     layer = 1 - layer
-                    (to_guidance if LAYERS[layer] == "GUIDANCE" else to_stick)()
+                    (to_autopilot if LAYERS[layer] == "AUTOPILOT" else to_stick)()
                     handover = (s.t, LAYERS[layer])
                 elif e.key == pygame.K_p:
                     paused = not paused
@@ -503,8 +525,6 @@ def main(argv: list[str] | None = None) -> int:
             kill_freeze = True
             accum = 0.0
         while accum >= dt_decision and n_steps < 4 and not kill_freeze:
-            if foe is not None:
-                foe.observe(s)
             if LAYERS[layer] == "STICK":
                 # The stick ramps on sim time, not frame time, so the same key
                 # held for the same seconds always gives the same deflection.
@@ -540,8 +560,14 @@ def main(argv: list[str] | None = None) -> int:
             trail.append((s.x, s.y))
             profile.append((s.t, s.h_ft))
             meter.update(s, ac.backend.controls)
+            # `None` for our side: the three control modes above already flew it,
+            # and two of them cannot be written as an action delta.  The referee
+            # keeps score for both and flies only the target.
+            combat.step({"red": None,
+                         "blue": (foe.act(combat.observe()["blue"])
+                                  if foe is not None else None)})
             if foe is not None:
-                foe.step(dt_decision)
+                foe.timeline()
                 foe_trail.append((foe.state.x, foe.state.y))
                 if len(foe_trail) > TRAIL_LENGTHS[0]:
                     foe_trail.pop(0)
@@ -572,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
               scale, paused, meter, live, rtf, LAYERS[layer],
               CMD_MODES[cmd_mode], crash, handover, args.throttle_cap,
               args.ramp, foe, foe_trail)
-        pygame.display.flip()
+        render.present(screen)
         clock.tick(60)
 
     for sink in sinks:
@@ -594,133 +620,107 @@ def main(argv: list[str] | None = None) -> int:
 
 
 class _Foe:
-    """The other aircraft, plus the referee for shots taken at it.
+    """The other aircraft's pilot, and a window onto the referee's books.
 
-    One-way for now: our gun is modelled, its gun is not.  That is a deliberate
-    step -- a circling target that cannot shoot back is rung 1 of the ladder,
-    the case where anything able to point and close should score, and it is the
-    right thing to fly against before anything defends itself.
+    It used to *be* the referee: its own health, its own track streak, its own
+    WEZ bookkeeping, and its own hand-built dict for the bot to read.  All four
+    were second copies of `envs.base.Combat`, and every one had drifted -- a
+    0.6 s lock against the tasks' 1.0, a 15 deg cone against 30, the
+    three-factor damage model against a flat 0.33, and only our gun modelled at
+    all.  The bench was showing a different game from the one being graded,
+    which is the failure this project keeps writing down.
 
-    Damage needs a *held* solution.  `TRACK_LOCK` seconds inside the envelope
-    before rounds start telling, and the clock resets the moment the track
-    breaks -- so a snapshot as the nose sweeps past is free, and breaking the
-    other aircraft's aim is a real defence rather than a cosmetic one.
+    Now `Combat` runs both aircraft and keeps score, and this is a name for
+    "the side I am not flying".  Note whose streak `track` reports: the referee
+    books one per shooter, so ours is the one that damages the target ahead.
     """
 
-    TRACK_LOCK = 0.6
-
-    def __init__(self, bot, h0_ft: float, v_kt: float,
-                 x: float, y: float, psi: float,
-                 cone_deg: float = WEZ_ATA_DEG) -> None:
-        # The cone is a *task* parameter, not a constant of the world: this tool
-        # defaults to the weapon's own 15 deg, and assignment 01 widens it to 30.
-        # Flying the assignment's geometry by hand is the point of `--cone`.
-        self.cone_deg = cone_deg
-        self.bot = bot
+    def __init__(self, bot, combat, side: str = "blue") -> None:
         # A bot's state lives in reset(), not __init__ -- `Circler` counts steps
-        # for its turn period, `Evader` tracks a break timer.  `Combat` and every env call
-        # this and the env calls it on every episode; this tool did not, so any
-        # bot with state crashed on its first act().  It went unnoticed because
-        # the only bot in the tool at the time was stateless.
+        # for its turn period, `Evader` tracks a break timer.  Every env calls
+        # this on every episode; this tool did not, so any bot with state
+        # crashed on its first act().
+        self.bot = bot
         self.bot.reset()
-        self.ac = Aircraft(h0_ft=h0_ft,
-                           guidance=Guidance(h0_ft=h0_ft, throttle_cap=1.0))
-        self.ac.reset(x=x, y=y, psi=psi, v_kt=v_kt)
-        self.health = 1.0
-        self.track = 0.0            # seconds of unbroken solution
-        self.wez_time = 0.0
-        self.damage = 0.0
-        self.eng = None             # last Engagement, ours onto them
-        self.notes: list[str] = []  # TacView timeline messages, drained by main
-        self.dead_at: float | None = None
+        self.combat = combat
+        self.side = side
+        self.mine = "red" if side == "blue" else "blue"
+        self.notes = []                  # TacView timeline, drained by main
+        self.dead_at = None
         self._was_in = False
-        self._me = None
+
+    # --- the referee's numbers, not a second set ----------------------------
+    @property
+    def ac(self):
+        return self.combat.ac[self.side]
 
     @property
     def state(self):
         return self.ac.state
 
     @property
+    def health(self) -> float:
+        return self.combat.health[self.side]
+
+    @property
+    def track(self) -> float:
+        """*Our* unbroken seconds on him -- the streak that damages this side."""
+        return self.combat.track[self.mine]
+
+    @property
+    def wez_time(self) -> float:
+        return self.combat.wez_time[self.mine]
+
+    @property
+    def eng(self):
+        """Our engagement onto him, as the referee computed it."""
+        return getattr(self.combat, "_eng", {}).get(self.mine)
+
+    @property
+    def cone_deg(self) -> float:
+        return self.combat.wez_cone_deg
+
+    @property
+    def lock_s(self) -> float:
+        return self.combat.track_lock
+
+    @property
     def acmi_colour(self) -> str:
         # TacView cannot draw a weapon cone, so the target says it instead
         if self.health <= 0.0:
             return "Grey"
-        if self.track >= self.TRACK_LOCK:
+        if self.track >= self.lock_s:
             return "Orange"         # rounds landing
         return "Red"
 
-    def observe(self, me) -> None:
-        self._me = me
-        self.eng = look(_kin(me), _kin(self.state), self.cone_deg)
+    def act(self, info):
+        """One decision from the bot, off the referee's own dict.
 
-    def _bot_view(self) -> dict:
-        """What a baseline bot reads.  The same keys `envs.base` hands it, seen
-        from the target's chair -- so the bots that fight in the env are the
-        same objects that fly here, with no second code path."""
-        s, me = self.state, self._me
-        e = (look(_kin(s), _kin(me), self.cone_deg)
-             if me is not None else self.eng)
-        # `lead_signed` is what `ace` steers on, and `envs.base.Combat.observe` computes
-        # it there.  Leaving it out here meant any bot better than `pursuit`
-        # crashed on its first frame in this tool -- the two code paths have to
-        # hand a bot the same dict or "the same objects fly here" is not true.
-        lead_signed = _wrap(math.atan2(e.aim_dx, e.aim_dy) - s.psi)
-        return dict(ata=e.ata, ata_signed=e.ata_signed, ata_lead=e.ata_lead,
-                    lead_signed=lead_signed,
-                    aa=e.aa, range=e.r, range_rate=e.r_dot, in_wez=e.in_wez,
-                    own_speed=s.v_kt, opp_speed=me.v_kt if me else s.v_kt,
-                    own_alt=s.h_ft,
-                    alt_diff=(me.h_ft - s.h_ft) if me is not None else 0.0,
-                    dist_to_boundary=1e9)
+        `info` is `Combat.observe()[self.side]`, so the bots that fight in the
+        env are these same objects reading these same keys.  There is no second
+        view to keep in step, which is what `_bot_view` used to be and what it
+        used to get wrong.
+        """
+        if self.health <= 0.0:
+            return None             # dead: `Combat` holds it, momentum and all
+        return self.bot.act(info)
 
-    def step(self, dt: float) -> None:
-        """Fly the bot one decision step, then adjudicate our shot."""
-        if self.health > 0.0:
-            self.ac.step(*self.bot.act(self._bot_view()))
-        else:
-            self.ac.hold()          # a dead aircraft still has momentum
-        if self.eng is None or self.health <= 0.0:
+    def timeline(self) -> None:
+        """Turn the referee's state into TacView notes.  Edges only."""
+        if self.health <= 0.0:
+            if self.dead_at is None:
+                self.dead_at = self.state.t
+                self.notes.append("SPLASH")
             return
-        if self.eng.in_wez:
-            self.wez_time += dt
-            self.track += dt
-            if not self._was_in:
-                self.notes.append("IN WEZ")
-                self._was_in = True
-            if self.track >= self.TRACK_LOCK:
-                d = self.eng.damage_rate * dt
-                self.damage += d
-                self.health = max(0.0, self.health - d)
-                if self.health <= 0.0:
-                    self.dead_at = self.state.t
-                    self.notes.append("SPLASH")
-        else:
-            if self._was_in:
-                self.notes.append("track broken")
-                self._was_in = False
-            self.track = 0.0
-
-
-class _Kin:
-    """What `engagement.look` needs: position, gun line, velocity."""
-
-    __slots__ = ("x", "y", "h", "psi", "theta", "vx", "vy", "vz")
-
-    def __init__(self, x, y, h, psi, theta, vx, vy, vz):
-        self.x, self.y, self.h = x, y, h
-        self.psi, self.theta = psi, theta
-        self.vx, self.vy, self.vz = vx, vy, vz
-
-
-def _kin(s) -> _Kin:
-    # Horizontal speed is V*cos(gamma), not V -- in a 20 deg climb the
-    # difference is 6 %, and altitude is a live axis now.  And vz is +h_dot:
-    # dz in `look` is (foe.h - me.h) with up positive, so a climb is positive
-    # here too.  The archived 2D version had -h_dot, which was invisible only
-    # because the plane was locked and h_dot was always about zero.
-    vh = s.v * math.cos(s.gamma)
-    return _Kin(s.x, s.y, s.h, s.psi, s.theta,
-                math.sin(s.track) * vh, math.cos(s.track) * vh, s.h_dot)
+        e = self.eng
+        if e is None:
+            return
+        if e.in_wez and not self._was_in:
+            self.notes.append("IN WEZ")
+            self._was_in = True
+        elif not e.in_wez and self._was_in:
+            self.notes.append("track broken")
+            self._was_in = False
 
 
 class _Meter:
@@ -801,7 +801,7 @@ def _draw(screen, fonts, ac, s, ctl, act, trail, profile, scale, paused,
           meter, live, rtf, layer, cmd_mode, crash, handover, throttle_cap,
           ramp_s, foe=None, foe_trail=()):
     f_big, f, f_small = fonts
-    screen.fill(BG, (0, 0, MAP_W, H))
+    screen.fill(BG, render.Layout.world)
 
     # The world views come from `tools/render.py`, shared with the policy
     # viewer.  They used to be duplicated here, and the copy read the firing
@@ -815,16 +815,17 @@ def _draw(screen, fonts, ac, s, ctl, act, trail, profile, scale, paused,
     weapon = render.Weapon(cone_deg=(foe.cone_deg if foe is not None
                                      else WEZ_ATA_DEG), r_min=WEZ_R_MIN,
                            r_max=WEZ_R_MAX, muzzle_ms=MUZZLE_MS,
-                           lock_s=_Foe.TRACK_LOCK)
+                           lock_s=(foe.lock_s if foe is not None
+                                   else DuelEnv.track_lock))
     in_wez = bool(foe is not None and foe.eng is not None and foe.eng.in_wez)
-    lock = (min(1.0, foe.track / _Foe.TRACK_LOCK) if foe is not None else 0.0)
+    lock = (min(1.0, foe.track / foe.lock_s) if foe is not None else 0.0)
 
     render.topdown(screen, render.Layout.topdown, f_small, own, other, weapon,
                    scale=scale, in_wez=in_wez, lock_frac=lock,
-                   guidance=(dict(psi_cmd=ac.psi_cmd, v_cmd_kt=ac.v_cmd_kt)
-                             if layer == "GUIDANCE" else None))
+                   autopilot=(dict(psi_cmd=ac.psi_cmd, v_cmd_kt=ac.v_cmd_kt)
+                             if layer == "AUTOPILOT" else None))
     render.profile(screen, render.Layout.profile, f_small, own,
-                   alt_cmd_ft=ac.alt_cmd_ft if layer == "GUIDANCE" else None)
+                   alt_cmd_ft=ac.alt_cmd_ft if layer == "AUTOPILOT" else None)
     render.cockpit(screen, render.Layout.cockpit, (f, f_small),
                    own, other, weapon, in_wez=in_wez, lock_frac=lock)
     _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
@@ -834,21 +835,6 @@ def _draw(screen, fonts, ac, s, ctl, act, trail, profile, scale, paused,
 
 
 
-
-
-def _stick_box(screen, font, x, y, size, ctl):
-    """Where the ramped stick actually is, since the keys only say 'more'."""
-    pygame.draw.rect(screen, (20, 23, 30), (x, y, size, size))
-    pygame.draw.rect(screen, (60, 68, 84), (x, y, size, size), 1)
-    mid = size // 2
-    pygame.draw.line(screen, (44, 50, 62), (x, y + mid), (x + size, y + mid))
-    pygame.draw.line(screen, (44, 50, 62), (x + mid, y), (x + mid, y + size))
-    px = x + mid + ctl["aileron"] * (mid - 6)
-    py = y + mid - ctl["elevator"] * (mid - 6)      # pull is up in the box
-    pygame.draw.line(screen, (70, 90, 120), (x + mid, y + mid), (px, py), 1)
-    pygame.draw.circle(screen, WARN, (int(px), int(py)), 5)
-    screen.blit(font.render("pull", True, DIM), (x + mid - 12, y + 2))
-    screen.blit(font.render("R", True, DIM), (x + size - 11, y + mid - 7))
 
 
 
@@ -871,7 +857,7 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
     T = render.text
 
     items = [T(f"FLIGHT TEST   {layer}", WARN if stick else ACCENT, big=True),
-             T("tab switches layer -- guidance is bypassed" if stick
+             T("tab switches layer -- autopilot is bypassed" if stick
                else f"tab switches layer -- input {cmd_mode} (m)",
                DIM, small=True)]
 
@@ -883,14 +869,14 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
                              foe.health, (90, 90, 90) if dead else hcol,
                              f"{foe.health:.2f}")]
         if e is not None:
-            hot = e.in_wez and foe.track >= foe.TRACK_LOCK
+            hot = e.in_wez and foe.track >= foe.lock_s
             items += [
                 T(f"range {e.r:6,.0f} m   lead err "
                   f"{math.degrees(e.ata_lead):4.1f} deg",
                   GOOD if e.in_wez else FG, small=True),
                 T(f"aspect {math.degrees(e.aa):4.0f} deg   closing "
                   f"{-e.r_dot:+5.0f} m/s", DIM, small=True),
-                T(f"hold  {foe.track:4.2f} / {foe.TRACK_LOCK:.2f} s"
+                T(f"hold  {foe.track:4.2f} / {foe.lock_s:.2f} s"
                   + ("   HITTING" if hot else ("   IN ZONE" if e.in_wez else "")),
                   WARN if hot else (GOOD if e.in_wez else DIM), small=True)]
 
@@ -1023,8 +1009,12 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
     render.Readout(screen, fonts).draw(items, pinned)
 
     # --- overlays on the map, not the panel ---------------------------------
+    # Centre of the map column, which moves with the window.  Hoisted out of the
+    # branches below because every one of them needs it and only the first one
+    # used to set it -- pressing `p` raised NameError and closed the tool.
+    cx = render.Layout.world[2] // 2
     if crash is not None:
-        box = pygame.Rect(MAP_W // 2 - 210, 26, 420, 58)
+        box = pygame.Rect(cx - 210, 26, 420, 58)
         pygame.draw.rect(screen, (60, 20, 24), box)
         pygame.draw.rect(screen, BAD, box, 2)
         screen.blit(f_big.render("CRASHED   BACKSPACE to restart", True, BAD),
@@ -1034,14 +1024,14 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
             f"   {crash[3]:.0f} ft", True, FG), (box.x + 16, box.y + 36))
     elif handover is not None:
         screen.blit(f_big.render(f"-> {handover[1]}", True, GOOD),
-                    (MAP_W // 2 - 60, 26))
+                    (cx - 60, 26))
     elif s.h_ft < 2000:
-        screen.blit(f_big.render("PULL UP", True, BAD), (MAP_W // 2 - 44, 30))
+        screen.blit(f_big.render("PULL UP", True, BAD), (cx - 44, 30))
     if foe is not None and foe.health <= 0.0:
         screen.blit(f_big.render("TARGET DOWN   BACKSPACE for a new one", True,
-                                 GOOD), (MAP_W // 2 - 210, 62))
+                                 GOOD), (cx - 210, 62))
     elif paused:
-        screen.blit(f_big.render("PAUSED", True, WARN), (MAP_W // 2 - 44, 62))
+        screen.blit(f_big.render("PAUSED", True, WARN), (cx - 44, 62))
 
 
 def _bar(screen, x, y, w, h, frac, col):

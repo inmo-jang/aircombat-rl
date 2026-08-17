@@ -17,13 +17,13 @@ time in the whole jet, and a burst that connects for a few tenths of a second
 is lethal.  So the model is: a *held* tracking solution kills in about a second,
 and everything else falls off hard.
 
-  cone     +-15 deg.  A gun's dispersion is a few milliradians; this angle is
-           not dispersion, it is how far off the tracking solution can be and
-           still put rounds through the target.  Damage falls linearly to zero
-           at the edge, so meaningful hits happen within a few degrees and the
-           rest is grazing.  The 30 deg used while the game was 2D was a
-           reward-shaping cone rather than a weapon; 10 deg was tried and is too
-           tight to fly by hand (see below).
+  cone     `WEZ_ATA_DEG`, +-15 deg.  A gun's dispersion is a few milliradians;
+           this angle is not dispersion, it is how far off the tracking solution
+           can be and still put rounds through the target.  Damage falls
+           linearly to zero at the edge, so meaningful hits happen within a few
+           degrees and the rest is grazing.  **Every task overrides it to 30**,
+           for exploration rather than realism -- see `envs/circular.py`.
+           10 deg was tried and is too tight to fly by hand (see below).
   range    150 m to 1,500 m.  Not "how far a bullet reaches" -- this is the
            denominator of the falloff, and 1,500 m is what makes a 600 m shot
            worth 0.67 instead of 0.47.  Six hundred metres is a good gun range
@@ -50,16 +50,16 @@ pursuit autopilot chasing the circler, best speed of 400-475 kt, time to kill:
     20      1500      36.4        45.4      80.8
     30      1500      35.1        44.5      78.9
 
-Range dominates and the cone barely matters past 20 deg, which is why 15/1500
-is the setting: it keeps the lead requirement biting -- pure pursuit still does
-much worse than lead -- without making the range term punish good shots.  The
-track lock is not a constraint at all here (0.6 s and 0.3 s give 36.4 s alike).
+Range dominates and the cone barely matters past 20 deg, which is why the
+falloff denominator is 1,500 m: it keeps the lead requirement biting -- pure
+pursuit still does much worse than lead -- without making the range term punish
+good shots.  The track lock is not a constraint at all here (0.6 s and 0.3 s
+give 36.4 s alike).
 
 The first version of this file used 10 deg and 1,000 m on the grounds that they
 were realistic, and a human flying it by hand for three minutes never once got
 inside the envelope -- closest approach 647 m, so the closing was fine and the
-*aiming* was impossible.  Realism that cannot be flown is the mistake appendix A
-of the workplan is about; "does it match reality" is not the same question as
+*aiming* was impossible.  "Does it match reality" is not the same question as
 "does it work as a game", and both have to be asked.
 """
 from __future__ import annotations

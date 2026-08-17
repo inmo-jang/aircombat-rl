@@ -1,1 +1,1 @@
-"""Guidance and low-level control."""
+"""The autopilot, and the layer under it."""

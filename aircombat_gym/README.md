@@ -1,52 +1,39 @@
 # aircombat_gym
 
 An F-16 air combat environment on [JSBSim](https://github.com/JSBSim-Team/jsbsim)'s
-6-DOF model — the real flight control system, running at 120 Hz, not a point mass.
+6-DOF model — the real flight control system, not a point mass.
 
-**Fly it by hand before you train anything on it.** The point is to feel what your
-policy will be commanding, and what the aircraft refuses to do.
 
-```python
-import gymnasium as gym
-import aircombat_gym.wvr.envs                 # registers the ids
-
-env = gym.make("AirCombat/Circular-v0")       # obs 37, action Discrete(9)
-obs, info = env.reset(seed=0)
-obs, reward, terminated, truncated, info = env.step(action)
-```
-
-**The environment does not compute a reward** — `step` returns 0.0 and hands the
-material out in `info`. Writing the reward, and turning the 37 raw channels into
-something a network can learn from, is the assignment.
-
-## Install and run
+## Install
 
 ```bash
 pip install -e .
+```
 
+
+
+## Feel the aircraft
+
+```bash
 python -m aircombat_gym.tools.manual_operation --tacview                   # solo
 python -m aircombat_gym.tools.manual_operation --tacview --enemy circler   # with a target
 ```
 
-**On macOS or Ubuntu, drop `--tacview`** — TacView is Windows-only. Everything you
-need to fly is in the pygame panel; you only lose the 3D view. To watch in 3D later,
-record with `--acmi flight.acmi` (works on any OS) and open the file on Windows.
+![Hand-flying: TacView on the left, the pygame panel on the right](docs/demo.gif)
 
-`--enemy circler` orbits at 20,000 ft and does not shoot back. `BACKSPACE` draws a
-fresh random engagement and `--seed N` makes the sequence reproducible. `--help`
-lists the rest.
+> **On macOS or Ubuntu, drop `--tacview`** from anything below — TacView is Windows-only. Everything you need is in the pygame panel; you only lose the 3D view. `--acmi flight.acmi` records a file on any OS and opens on Windows later.
 
-## Two control layers — `tab` switches
 
-| | **GUIDANCE** (default) | **STICK** |
+
+## Two control modes
+
+| | **AUTOPILOT** (default) | **STICK** |
 |---|---|---|
 | you command | target heading, speed, altitude | aileron, elevator, rudder, throttle |
 | who flies | the controller works out bank, g, thrust | you |
 | why | **this is the interface your policy uses** | to see what happens underneath |
 
-`tab` hands the aircraft over live. Roll it inverted into a dive with the stick,
-press `tab`, and watch guidance recover it — that is roughly the attitude an
-untrained policy produces.
+
 
 ## Keys
 
@@ -58,7 +45,7 @@ Letters mirror the numpad 3×3, so it works one-handed and works on a laptop.
    Z X C          1 2 3          throttle+ / pitch / throttle-
 ```
 
-| axis | keys | **GUIDANCE** | **STICK** |
+| axis | keys | **AUTOPILOT** | **STICK** |
 |---|---|---|---|
 | left/right | `A` `D` | target heading ∓ | roll left / right |
 | up | `W` | **climb** | **nose down** (stick forward) |
@@ -71,36 +58,58 @@ Letters mirror the numpad 3×3, so it works one-handed and works on a laptop.
 Arrow keys, `Home`/`PgUp`/`End`/`PgDn`/`Ins`/`Del` and the numpad all work too,
 NumLock on or off.
 
-Also: `tab` layer · `m` TARGET↔ACTION · `p` pause · `r` reset · `esc` quit ·
-`+` `−` zoom · `g` trail length
+Also: `tab` layer · `m` CONTINUOUS↔DISCRETE (AUTOPILOT only) · `p` pause ·
+`r` reset · `esc` quit · `+` `−` zoom · `g` trail length
 
-> **⚠ The vertical axis means opposite things in the two layers.** `W` climbs in
-> GUIDANCE and pushes the nose *down* in STICK, because autopilot convention
-> ("up = up") and stick convention ("push = down") genuinely disagree. The first
-> help line on screen always tells you which one is live: green `W/8 CLIMB` or
-> orange `W/8 NOSE DOWN`.
 
-### `m` — continuous vs discrete
 
-Two grains of the same command, so you can feel what each kind of action space
-is like. Fly a few minutes in both.
+## Available `Gym` environments
 
-- **CONTINUOUS** (default) — keys nudge the setpoint finely; it stays where you
-  leave it, like a cruise-control dial
-- **DISCRETE** — the grid a policy gets: heading ±30°, speed ±20 kt, altitude
-  ±1000 ft. Tap `D` → turns 30° and stops. Hold `D` → never stops turning
+| id | the other aircraft | how it starts | timeout |
+|---|---|---|---|
+| `AirCombat/Circular-v0` | orbits at a fixed rate. Never evades, never aims | you 1.5–4 km out, nose within 90° of it | 120 s |
+| `AirCombat/Evader-v0` | cruises straight, then breaks hard in a random direction when you close | same | 240 s |
+| `AirCombat/AdvantagedFight-v0` | lead pursuit with closure control — the strongest one here | 4–10 km apart, your nose within 90° of him and his free, so the opening is usually yours | 120 s |
+| `AirCombat/FairFight-v0` | the same one | abeam, 10 km, opposite headings — dead even | 120 s |
+Whichever you pick:
 
-The gym exposes the discrete one. A task picks which of the three axes it hands
-over, so the size follows: heading and speed only is `Discrete(9)`, all three is
-`Discrete(27)`.
+- **observation space** — the same 39 raw channels every time
+- **action space** — two axes, heading and speed. `Discrete(9)` by default,
+  three values each; `Box(2)` in [-1, 1] with `action_mode="continuous"`
+- **both aircraft held at 20,000 ft** — the third axis is closed, so nothing you
+  send can move it, and the autopilot's altitude hold flies it for you
 
-## What the panel is telling you
+### How to Use
+```python
+import gymnasium as gym
+import aircombat_gym.wvr.envs                 # registers the ids
+
+env = gym.make("AirCombat/Circular-v0")       # obs 39, action Discrete(9)
+obs, info = env.reset(seed=0)
+obs, reward, terminated, truncated, info = env.step(action)
+```
+
+**The environment does not compute a reward** — `step` returns 0.0 and hands the
+material out in `info`. Writing the reward, and turning the 39 raw channels into
+something a network can learn from, is yours.
+
+## Be the policy
+
+```bash
+python -m aircombat_gym.wvr.play --env fair --tacview
+```
+
+Four arrow keys, and each press becomes an element of `env.action_space` and
+goes through `env.step()` — same weapon, same opponent, same `info`, no shortcut
+around the environment. **Fly a task before you write a reward for it**, or the
+reward is a guess about a game you have not played.
 
 | | |
 |---|---|
-| `turn cap` | best turn rate at **this speed and this altitude**. The purple tick is what you would get at 5,000 ft — that gap is what your altitude costs you |
-| `ENERGY` | `Eh = h + V²/2g`. Blue is height, orange is speed. Blue shrinking while orange grows is a trade, not a loss; the bar getting shorter than the white 5-second mark is a loss |
-| `Ps` | rate of change of `Eh`. **This is the bill for a hard turn** |
-| `Nz` | current g, against what this speed and altitude can actually make |
-| `hold` | rounds need a solution *held*, not touched. `IN ZONE` means inside the envelope, `HITTING` means rounds are landing. Aim at the **pipper** — it sits ahead of the target, not on it |
-| `alpha` / `authority` | STICK only. The FLCS cuts your pitch command as AoA rises — `authority 51 %` means half your stick is being thrown away, on purpose, to keep you out of a stall |
+| `←` `→` | heading −30° / +30° |
+| `↑` `↓` | speed +20 kt / −20 kt |
+| nothing held | the no-op action, which *freezes* the target rather than re-deriving it |
+| `m` | swap `Discrete(9)` for `Box(2)` mid-engagement — the same fight, the other action space |
+| `r` new engagement · `p` pause · `+` `−` zoom · `g` trail · `esc` quit |
+
+`--env` takes `circular`, `evader`, `advantaged` or `fair`. 

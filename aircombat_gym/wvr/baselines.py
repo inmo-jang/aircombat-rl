@@ -15,14 +15,17 @@ They form a ladder, and the rungs are about *what the learner has to discover*:
               between them is a difference in aiming and nothing else.
     ace       lead pursuit plus closure control.  The strongest reference, and
               what the assignment's baselines are measured against.
-    evader    watches its six and breaks.  The first opponent that answers back,
-              and the first a memorised open-loop answer cannot beat.
+    evader    cruises, then breaks hard in a random direction when you close.
+              The first opponent that answers back, and the first a memorised
+              open-loop answer cannot beat.
 
 Plain Python on a dict, so they run without torch.
 """
 from __future__ import annotations
 
 import math
+
+import numpy as _np
 
 from ..core.aircraft import DECISION_HZ
 from .actions import DELTA_ALT_FT, DELTA_HEADING_DEG, DELTA_SPEED_KT
@@ -43,15 +46,28 @@ def _snap(want: float, step: float) -> float:
 
 
 class Bot:
-    """The interface `Combat` drives, plus the two steering helpers most bots
-    want.  `act` may ignore `info` -- a target drone does."""
+    """The interface `TaskEnv` drives for the seat the learner is not in.
+
+    `act(info, obs)` gets both halves of what a pilot could know: the derived
+    match material, and the raw state vector as that seat sees it.  Every bot
+    here ignores `obs` -- they are written against geometry, and the vector
+    would only make them longer.  It is in the signature for `PolicyDriver`,
+    which cannot work without it: `info` carries no positions, so the
+    39-channel observation cannot be rebuilt from it.
+
+    The env passes both rather than letting the driver reach back for them, so
+    that "which snapshot does each pilot decide from" is settled in one place.
+    That question has bitten once already -- calling `observe()` a second time
+    inside `step` gave the opponent a quarter-step-fresher view of health, and
+    `ace` in both seats then lost as red 100 times out of 100.
+    """
 
     name = "bot"
 
     def reset(self) -> None:
         pass
 
-    def act(self, info=None) -> tuple[float, float, float]:
+    def act(self, info=None, obs=None) -> tuple[float, float, float]:
         raise NotImplementedError
 
     @staticmethod
@@ -93,7 +109,7 @@ class Circler(Bot):
     def reset(self) -> None:
         self._carry = 0.0
 
-    def act(self, info=None) -> tuple[float, float, float]:
+    def act(self, info=None, obs=None) -> tuple[float, float, float]:
         self._carry += self.rate / DECISION_HZ
         if abs(self._carry) >= abs(TURN):
             self._carry -= math.copysign(TURN, self.rate)
@@ -111,7 +127,7 @@ class Pursuit(Bot):
 
     name = "pursuit"
 
-    def act(self, info):
+    def act(self, info, obs=None):
         return (self._turn(info["ata_signed"]),
                 DV if info["own_speed"] < CORNER_KT else 0.0,
                 self._match_alt(info))
@@ -127,7 +143,7 @@ class Lead(Bot):
 
     name = "lead"
 
-    def act(self, info):
+    def act(self, info, obs=None):
         s = math.copysign(1.0, info["ata_signed"])
         return (self._turn(info["ata_lead"] * s),
                 DV if info["own_speed"] < CORNER_KT else 0.0,
@@ -147,7 +163,7 @@ class Ace(Bot):
         circle than the target's and the solution never settles; slowing inside
         gun range is what lets the nose stay on.
       * it matches altitude aggressively.  A 1,000 ft split at 800 m is 35 deg
-        of elevation, which is well outside a 15 deg cone.
+        of elevation, which is outside the 30 deg cone.
 
     `pursuit` and `lead` are kept as the naive rungs beneath this.  A learner
     that beats them but not this one has found the obvious answer only.
@@ -156,7 +172,7 @@ class Ace(Bot):
     name = "ace"
     CLOSE_M = 900.0
 
-    def act(self, info):
+    def act(self, info, obs=None):
         r = info["range"]
         turn = self._turn(info["lead_signed"], 4.0)
         if r > self.CLOSE_M:
@@ -169,42 +185,104 @@ class Ace(Bot):
 
 
 class Evader(Bot):
-    """Checks its six and breaks; otherwise it hunts.
+    """Cruises straight, and breaks hard in a random direction when threatened.
 
-    Rung 2.  The important property is not that it is hard, it is that it
-    *answers back*: an open-loop policy that memorised one approach cannot beat
+    Rung 2, and the property that earns it the rung is not difficulty -- it is
+    that it *answers back*.  A policy that memorised one approach cannot beat
     something whose next move depends on where the attacker is.  The 2D version
-    measured exactly this -- the same algorithm went from 2 kills out of 12
+    measured exactly this: the same algorithm went from 2 kills out of 12
     against a scripted circle to 10 out of 12 against a reactive opponent,
     because the circle could be memorised and the reaction could not.
 
-    Break turn plus a descent: trading height for turn rate is the right answer
-    when someone is behind you, and it makes the vertical part of the fight.
+    Two things are random, and both come from the caller's generator rather
+    than from `random`:
+
+        which way it breaks     otherwise the answer is "always cut left"
+        how long it holds it    otherwise the answer is a stopwatch
+
+    Passing the generator in is not fastidiousness.  A bot that draws from the
+    module-level `random` puts an unseeded stream inside an env whose whole
+    evaluation protocol is three disjoint seed bands, and every graded number
+    stops being reproducible.
+
+    Purely horizontal: the vertical is closed in the tasks this flies in, and a
+    break that traded height for turn rate would be commanding a channel the
+    learner is not allowed to answer on.
     """
 
     name = "evader"
     THREAT_R = 2500.0
-    THREAT_AA = math.radians(60.0)      # he is inside my rear quarter
+    # `aa` is the angle between the line of sight and *his* nose, so it reads 0
+    # when he is pointed away from me and pi when he is pointed at me.  This is
+    # the same convention the damage model uses -- `cos(aa)` peaks at his six --
+    # and the version of this bot that shipped had the test the other way round,
+    # so it broke only when the attacker was looking somewhere else.  It fired
+    # 0.1 times a match instead of 3.
+    THREAT_AA = math.radians(120.0)     # his nose within 60 deg of me
+    # 4-8 s, not 2-4.  Measured on the ace-minus-pursuit gap, which is what a
+    # task is worth: a longer break bleeds more of blue's energy, and `ace`
+    # converts that while `pursuit` does not.  Doubling the break took the gap
+    # from +0.10 to +0.17, and pairing it with a 240 s clock took it to +0.22.
+    BREAK_LO_S, BREAK_HI_S = 4.0, 8.0
+    RECOVER_S = 1.0                     # wings level before it will break again
+
+    def __init__(self, rng=None):
+        self.rng = rng if rng is not None else _np.random.default_rng()
 
     def reset(self):
         self.breaking = 0
+        self.cooldown = 0
         self.side = 1.0
 
-    def act(self, info):
-        # `aa` is measured from *his* nose to me, so a small aa means he is
-        # pointing at me.  That plus close range is the definition of trouble.
-        threatened = info["range"] < self.THREAT_R and info["aa"] < self.THREAT_AA
-        if threatened and self.breaking <= 0:
-            self.breaking = 60                       # 3 s of committed break
-            self.side = -math.copysign(1.0, info["ata_signed"] or 1.0)
+    def act(self, info, obs=None):
+        threatened = (info["range"] < self.THREAT_R
+                      and info["aa"] > self.THREAT_AA)
         if self.breaking > 0:
             self.breaking -= 1
-            return (self.side * TURN, 0.0, -DALT)    # break and unload downhill
-        return (self._turn(info["ata_signed"]),
-                DV if info["own_speed"] < CORNER_KT else 0.0,
-                self._match_alt(info))
+            return (self.side * TURN, 0.0, 0.0)
+        if self.cooldown > 0:
+            self.cooldown -= 1
+        elif threatened:
+            self.breaking = int(DECISION_HZ * self.rng.uniform(
+                self.BREAK_LO_S, self.BREAK_HI_S))
+            self.cooldown = int(DECISION_HZ * self.RECOVER_S)
+            self.side = 1.0 if self.rng.random() < 0.5 else -1.0
+            return (self.side * TURN, 0.0, 0.0)
+        # not threatened: run, and keep the energy up to make the run worth it
+        return (0.0, DV if info["own_speed"] < CORNER_KT else 0.0, 0.0)
+
+
+class PolicyDriver(Bot):
+    """A trained policy in the seat a bot would otherwise fly.
+
+    This is what a policy-versus-policy match is made of.  Every other bot
+    here is hand-written and reads `info`; this one reads `obs`, the same
+    39-channel vector the learner in the other seat gets, encoded from this
+    seat's point of view.
+
+        env = AdvantagedFightEnv(seat="red")   # student A drives the gym
+        foe = PolicyDriver(B.predict, env)     # student B flies blue
+
+    `predict` takes the raw 39 channels and returns whatever `env.decode`
+    accepts -- an index for a discrete space, a vector for a continuous one.
+    Wrapping the submission's own observation transform is the submission's
+    business, exactly as it is when it plays the learner's seat.
+    """
+
+    name = "policy"
+
+    def __init__(self, predict, env, transform=None) -> None:
+        self.predict = predict
+        self.decode = env.decode
+        self.transform = transform
+
+    def act(self, info=None, obs=None):
+        if obs is None:
+            raise ValueError("PolicyDriver needs the observation; the env "
+                             "passes it as the second argument to act()")
+        x = obs if self.transform is None else self.transform(obs)
+        return self.decode(self.predict(x))
 
 
 LADDER = (Circler, Pursuit, Lead, Ace, Evader)
-ALL = LADDER
-BY_NAME = {c.name: c for c in ALL}
+BY_NAME = {c.name: c for c in LADDER}

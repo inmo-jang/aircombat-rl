@@ -1,4 +1,4 @@
-"""`StateSpec v1` -- the observation every task hands out.  37 raw channels.
+"""`StateSpec v2` -- the observation every task hands out.  39 raw channels.
 
 **This is an instrument panel, not a network input.**  Everything is a raw SI
 quantity: metres, metres per second, radians, g, seconds.  Nothing is
@@ -8,18 +8,31 @@ from is the student's job, and it is a graded part of the assignment.
 
 Three properties, and each one is load-bearing.
 
-**Task-invariant.**  The same 37 channels come out of every rung of the ladder.
-Channels that are constant in a given task stay in the vector anyway -- in the
-circular-target task the altitudes never move and `own_health` never drops --
-because a policy trained on rung 1 has to load unchanged into rung 3, and that
-is impossible if the input width changes underneath it.  "Work out which inputs
-are useless" is part of the exercise.
+**Mirror-symmetric.**  Every quantity that belongs to one aircraft appears
+twice, `own_` and `opp_`, in that order.  Swap the seats and the vector permutes
+into itself -- which is a property `tests/test_envs.py` asserts rather than a
+claim this docstring makes, and which the last rung of the ladder depends on,
+because a tournament puts each submission in both seats.
 
-**Raw.**  Measured with behaviour cloning on 2026-08-11: handing over the
-precomputed gun geometry (ATA, aspect, lead) is worth two kills out of thirty
-against handing over raw 6-DOF -- 29/30 against 27/30.  The representation is
-not what makes this task hard, so there is no reason to spend the teaching
-opportunity on it.
+v1 broke it in two places: `own_in_wez` had no counterpart, and a single
+`dist_to_boundary` served whoever was asking.  Both were derivable, so nothing
+was hidden -- what was wrong showed up in the answer key.  Handing out my half
+of the gun for free and making the other half homework produced twenty-one
+reward functions in a row that paid for own aim angle and none that paid for
+his, in a task where the opponent's nose is what separates the two quadrants
+worth having from the two that are not.
+
+**Task-invariant.**  The same 39 channels come out of every rung of the ladder.
+Channels that are constant in a given task stay in the vector anyway -- in
+`Circular` the altitudes never move and `own_health` never drops -- because a
+policy trained there has to load unchanged into a duel, and that is impossible
+if the input width changes underneath it.  "Work out which inputs are useless"
+is part of the exercise.
+
+**Raw.**  Measured with behaviour cloning: handing over the precomputed gun
+geometry (ATA, aspect, lead) is worth two kills out of thirty against handing
+over raw 6-DOF -- 29/30 against 27/30.  The representation is not what makes
+this task hard, so there is no reason to spend the teaching opportunity on it.
 
 **Not normalised.**  This one has a cost and it is deliberate.  `x` arrives as
 20,000-odd metres and a network fed that directly will diverge, loudly, on the
@@ -29,9 +42,12 @@ of this task orbits at up to 9.6 km radius (325 kt at 1 deg/s), both aircraft
 saturate independently, and two jets a kilometre apart read as the same point.
 A loud failure a student can debug beats a quiet one nobody sees.
 
-The derived geometry a reward needs -- range, ATA, aspect, `in_wez` -- is not
-here.  It comes out in the `info` dict instead, which keeps observation
-engineering and reward engineering as separate exercises.
+The derived *geometry* a reward needs -- range, ATA, aspect, the lead angle --
+is not here.  It comes out in the `info` dict instead, which keeps observation
+engineering and reward engineering as separate exercises.  `in_wez` is the one
+crossing: it is a fact about the match rather than about the geometry (it
+depends on the weapon's cone and range band, which a student cannot read off a
+position), so both sides of it are in the vector *and* in `info`.
 
 **Why this is at the top of the package and not under `envs/`.**  It is the
 contract a student writes against -- `from aircombat_gym.wvr import obs as O` is in
@@ -44,7 +60,7 @@ import math
 
 import numpy as np
 
-STATE_SPEC_VERSION = 1
+STATE_SPEC_VERSION = 2
 
 # --- channel names -----------------------------------------------------------
 # Two aircraft, own first, then the match state.  The order is frozen: a policy
@@ -58,30 +74,31 @@ _PER_AIRCRAFT = (
     "p", "q", "r",              # body rates [rad/s]
 )
 
+# Paired, `own_` then `opp_`, so that swapping seats permutes the vector into
+# itself.  `t_remaining` is the one unpaired entry and it is genuinely shared:
+# one clock, both pilots.
 _MATCH = (
     "own_health",               # 1.0 -> 0.0
     "opp_health",
     "own_track_time",           # [s] unbroken seconds of firing solution
     "opp_track_time",           # [s] how long he has held one on me
     "own_in_wez",               # 0.0 / 1.0
-    "t_remaining",              # [s]
-    "dist_to_boundary",         # [m]
+    "opp_in_wez",               # 0.0 / 1.0 -- he has the solution on me
+    "own_dist_to_boundary",     # [m] to the arena edge
+    "opp_dist_to_boundary",     # [m]
+    "t_remaining",              # [s] shared
 )
 
 STATE_NAMES = (tuple(f"own_{n}" for n in _PER_AIRCRAFT)
                + tuple(f"opp_{n}" for n in _PER_AIRCRAFT)
                + _MATCH)
 
-STATE_DIM = len(STATE_NAMES)                       # 37
+STATE_DIM = len(STATE_NAMES)                       # 39
 _INDEX = {n: i for i, n in enumerate(STATE_NAMES)}
 
 
-def state_names() -> tuple[str, ...]:
-    return STATE_NAMES
-
-
 def index(name: str) -> int:
-    """Channel index by name, for a student who wants three of the thirty-seven."""
+    """Channel index by name, for a student who wants three of the thirty-nine."""
     return _INDEX[name]
 
 
@@ -115,9 +132,34 @@ def encode(own, opp, info: dict) -> np.ndarray:
         info["own_health"], info["opp_health"],
         info["track_time"], info["under_track"],
         1.0 if info["in_wez"] else 0.0,
-        info["t_remaining"], info["dist_to_boundary"],
+        1.0 if info["opp_in_wez"] else 0.0,
+        info["dist_to_boundary"], info["opp_dist_to_boundary"],
+        info["t_remaining"],
     ]
     return np.asarray(v, dtype=np.float32)
+
+
+def mirror(obs) -> np.ndarray:
+    """Swap every `own_`/`opp_` pair.  The seats seen from the other cockpit.
+
+    Here because v2 promises the vector is mirror-symmetric, and a promise
+    nobody can check is a comment.  `tests/test_envs.py` is the first caller and
+    currently the only one: `obs_for("red")` mirrored must equal
+    `obs_for("blue")` at the same instant.  It is also the check to reach for
+    when a policy wins from one seat and not the other -- that symptom cost
+    eleven discarded hypotheses once, before the cause turned out to be the map
+    projection rather than anything in the code.
+    """
+    v = np.asarray(obs, dtype=np.float32).copy()
+    out = np.empty_like(v)
+    for i, n in enumerate(STATE_NAMES):
+        if n.startswith("own_"):
+            out[i] = v[_INDEX["opp_" + n[4:]]]
+        elif n.startswith("opp_"):
+            out[i] = v[_INDEX["own_" + n[4:]]]
+        else:
+            out[i] = v[i]
+    return out
 
 
 def unpack(obs) -> dict:

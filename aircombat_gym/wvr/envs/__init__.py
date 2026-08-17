@@ -5,12 +5,13 @@
 
     env = gym.make("AirCombat/Circular-v0")
 
-One file per assignment.  `base.py` holds what they share: `Combat` runs the two
+One file per task.  `base.py` holds what they share: `Combat` runs the two
 aircraft and records what the weapon did, `TaskEnv` is the Gymnasium surface and
-decides who won.  An assignment supplies its starting geometries, its opponent,
-and -- if its difficulty needs it -- its own `verdict()`.
+decides who won.  A task supplies its starting geometries, its opponent, and -- if its
+difficulty needs it -- its own `verdict()`.  The two armed duels share
+`DuelEnv`, which adds the `mutual` outcome.
 
-Every environment hands out the same 37-channel observation (`aircombat_gym.wvr.obs`)
+Every environment hands out the same 39-channel observation (`aircombat_gym.wvr.obs`)
 so a policy trained on one rung loads into the next.  None of them computes a
 reward: that is the student's job, and `tests/test_envs.py` enforces it.
 """
@@ -20,8 +21,14 @@ from gymnasium.envs.registration import register, registry
 
 from .base import ARENA_R, Combat, Initial, TaskEnv
 from .circular import CircularTargetEnv
+from .evader import EvadingTargetEnv
+from .advantaged import AdvantagedFightEnv
+from .fair import FairFightEnv
 
-ENVS = {"AirCombat/Circular-v0": CircularTargetEnv}
+ENVS = {"AirCombat/Circular-v0": CircularTargetEnv,
+        "AirCombat/Evader-v0": EvadingTargetEnv,
+        "AirCombat/AdvantagedFight-v0": AdvantagedFightEnv,
+        "AirCombat/FairFight-v0": FairFightEnv}
 
 
 def _register() -> None:
@@ -38,5 +45,6 @@ def _register() -> None:
 
 _register()
 
-__all__ = ["Combat", "Initial", "TaskEnv", "CircularTargetEnv", "ENVS",
-           "ARENA_R"]
+__all__ = ["Combat", "Initial", "TaskEnv", "CircularTargetEnv",
+           "EvadingTargetEnv", "AdvantagedFightEnv",
+           "FairFightEnv", "ENVS", "ARENA_R"]

@@ -1,6 +1,6 @@
 """Flight envelope constants, measured from JSBSim F-16 at H0.
 
-Every number here came out of `preflight/` (see workplan.md 3.2.6).  Nothing in
+Every number here came out of `preflight/` (see docs/workplan.md 3.2.6).  Nothing in
 this file is a guess; if you change H0 you must re-run the measurements, because
 n_max is a function of dynamic pressure and these were all taken at 20,000 ft.
 
@@ -21,7 +21,6 @@ import math
 # back in the game -- peak turn rate runs 17.7 deg/s at 5,000 ft against
 # 9.4 at 30,000, so altitude buys turn performance and not just speed.
 H0_FT = 20000.0
-H0_M = H0_FT * 0.3048
 ALT_MIN_FT = 5000.0
 ALT_MAX_FT = 30000.0
 
@@ -70,7 +69,7 @@ V_MAX_KT = 650.0
 #     not buying height, and height is worth 17.7 deg/s at the floor against 9.4
 #     at the ceiling.  Whether 1.20x is still degenerate in 3D is unmeasured,
 #     and carrying 2D conclusions into 3D is exactly how this project has gone
-#     wrong before (workplan 3.2.12).
+#     wrong before (docs/workplan.md 3.2.12).
 #   * it costs less than it looks.  V_MAX_KT is the binding constraint above
 #     ~0.89: the speed loop targets 650 kt and never asks for more throttle than
 #     that needs, so raising the cap past 0.9 changes nothing in level flight.
@@ -92,8 +91,8 @@ THROTTLE_CAP = 1.00
 # An *absolute* reserve, not a percentage.  0.9 * n_max leaves 0.6 g spare at
 # corner speed but only 0.25 g at the floor, which is where the aircraft
 # actually needs it -- and that is what produced a 192 ft excursion before this
-# was changed.  Guidance allocates the same way: altitude takes its g first and
-# the bank ceiling gets what is left (see control/guidance.py).
+# was changed.  Autopilot allocates the same way: altitude takes its g first and
+# the bank ceiling gets what is left (see control/autopilot.py).
 N_RESERVE = 0.35
 
 # --- structural limit --------------------------------------------------------
@@ -169,7 +168,7 @@ def n_max(v_kt: float, h_ft: float = H0_FT) -> float:
 
 
 def n_usable(v_kt: float, h_ft: float = H0_FT) -> float:
-    """Load factor guidance is allowed to plan on, reserve already removed."""
+    """Load factor autopilot is allowed to plan on, reserve already removed."""
     return max(1.05, n_max(v_kt, h_ft) - N_RESERVE)
 
 
@@ -180,7 +179,7 @@ def max_bank_rad(v_kt: float, h_ft: float = H0_FT) -> float:
     aircraft can actually make, hold the reserve back, and you get a bank
     ceiling that shrinks as the aircraft bleeds speed.
 
-    Guidance recomputes this every step with the altitude correction subtracted
+    Autopilot recomputes this every step with the altitude correction subtracted
     first, so this is the ceiling with nothing else competing -- what the HUD
     shows and what the bots reason about.
     """

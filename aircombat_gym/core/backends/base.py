@@ -1,8 +1,8 @@
 """Backend contract.  Everything above this line is unaware of JSBSim.
 
 The backend is deliberately *low level*: it takes control-surface commands and
-advances physics.  Guidance lives in `control/`, one layer up, so the two can be
-replaced independently -- swapping the guidance implementation (hand-written vs
+advances physics.  Autopilot lives in `control/`, one layer up, so the two can be
+replaced independently -- swapping the autopilot implementation (hand-written vs
 LQR vs learned) must not require touching the simulator wrapper.
 """
 from __future__ import annotations

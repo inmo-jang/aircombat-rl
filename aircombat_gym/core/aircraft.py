@@ -1,7 +1,7 @@
-"""Backend + guidance, stepped at the decision rate.
+"""Backend + autopilot, stepped at the decision rate.
 
 This is what the env and the flight-test tools both drive.  One `step()` is one
-policy decision (20 Hz); the guidance loops run underneath at physics rate,
+policy decision (20 Hz); the autopilot loops run underneath at physics rate,
 because closing a bank loop at 20 Hz is not the same thing at all.
 
 Command semantics, which are subtler than they look:
@@ -23,7 +23,7 @@ import math
 
 from .backends.base import AircraftState
 from .backends.jsbsim_f16 import JSBSimF16
-from .control.guidance import Guidance, GuidanceOutput, wrap_pi
+from .control.autopilot import Autopilot, AutopilotOutput, wrap_pi
 from .envelope import ALT_MAX_FT, ALT_MIN_FT, H0_FT, V_MAX_KT, V_MIN_KT
 
 # Physics is always 120 Hz.  The *decision* rate is a design choice, and it was
@@ -36,29 +36,22 @@ DECISION_HZ = 20.0
 SUBSTEPS = int(round(PHYSICS_HZ / DECISION_HZ))
 
 
-def set_decision_hz(hz: float) -> None:
-    """Global, because the env, the duel and the bots must all agree."""
-    global DECISION_HZ, SUBSTEPS
-    DECISION_HZ = float(hz)
-    SUBSTEPS = int(round(PHYSICS_HZ / DECISION_HZ))
-
-
 class Aircraft:
 
-    def __init__(self, h0_ft: float = H0_FT, guidance: Guidance | None = None,
+    def __init__(self, h0_ft: float = H0_FT, autopilot: Autopilot | None = None,
                  backend: JSBSimF16 | None = None) -> None:
         self.h0_ft = h0_ft
         self.backend = backend or JSBSimF16(dt_physics=1.0 / PHYSICS_HZ, h0_ft=h0_ft)
-        self.guidance = guidance or Guidance(h0_ft=h0_ft)
+        self.autopilot = autopilot or Autopilot(h0_ft=h0_ft)
         self.psi_cmd = 0.0
         self.v_cmd_kt = 400.0
         self.alt_cmd_ft = h0_ft
-        self.last: GuidanceOutput | None = None
+        self.last: AutopilotOutput | None = None
 
     def reset(self, x: float = 0.0, y: float = 0.0, psi: float = 0.0,
               v_kt: float = 400.0) -> AircraftState:
         self.backend.reset(x=x, y=y, psi=psi, v_kt=v_kt, h_ft=self.h0_ft)
-        self.guidance.reset()
+        self.autopilot.reset()
         self.psi_cmd = psi
         self.v_cmd_kt = v_kt
         self.alt_cmd_ft = self.h0_ft
@@ -97,7 +90,7 @@ class Aircraft:
         dt = self.backend.dt_physics
         for _ in range(SUBSTEPS if n_substeps is None else n_substeps):
             s = self.backend.state
-            out = self.guidance.update(s, self.psi_cmd, self.v_cmd_kt, dt,
+            out = self.autopilot.update(s, self.psi_cmd, self.v_cmd_kt, dt,
                                        self.alt_cmd_ft)
             self.backend.set_controls(out.aileron, out.elevator,
                                       out.rudder, out.throttle)

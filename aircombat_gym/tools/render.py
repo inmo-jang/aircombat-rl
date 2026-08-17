@@ -41,11 +41,8 @@ BAD = (255, 90, 90)
 GOOD = (120, 230, 150)
 TRAIL = (70, 110, 150)
 FOE_TRAIL = (110, 60, 60)
-# The ADI's sky and ground.  Bright, because nothing is drawn on top of them.
-SKY = (58, 104, 158)
-GROUND = (122, 88, 52)
-# The same two through a HUD.  Much darker: the symbology is drawn *over* these,
-# and at ADI brightness the green ladder and the red target stop reading.
+# Sky and ground through a HUD.  Dark on purpose: the symbology is drawn *over*
+# these, and at full brightness the green ladder and the red target stop reading.
 HUD_SKY = (32, 52, 76)
 HUD_GROUND = (62, 48, 32)
 
@@ -144,15 +141,24 @@ def ray(sc, cx, cy, ang, length, col, width=1):
                       cy - math.cos(ang) * length), width)
 
 
-def wez_wedge(sc, cx, cy, psi, weapon: Weapon, scale, in_wez, locked):
+def wez_wedge(sc, cx, cy, psi, weapon: Weapon, scale, in_wez, locked,
+              hostile: bool = False):
     """Horizontal slice of the firing cone.
 
     Only a slice: the referee tests the 3D angle, so a target above or below can
     sit inside this wedge and still not count.  That is what the cockpit view is
     for, and why the lock bar is the thing that settles it.
+
+    `hostile` draws the *other* aircraft's cone, in red rather than green.  The
+    colour is the whole point of the flag: the same shape means "I can shoot"
+    from one nose and "I am being shot" from the other, and a green cone
+    pointing at you would read as the good news it is not.
     """
-    col = GOOD if (in_wez and locked) else ((150, 200, 150) if in_wez
-                                            else (58, 78, 62))
+    warm = ((255, 120, 120) if (in_wez and locked)
+            else ((200, 110, 110) if in_wez else (86, 54, 54)))
+    cool = GOOD if (in_wez and locked) else ((150, 200, 150) if in_wez
+                                             else (58, 78, 62))
+    col = warm if hostile else cool
     r_in, r_out = weapon.r_min / scale, weapon.r_max / scale
     half = math.radians(weapon.cone_deg)
     for side in (-1, 1):
@@ -205,11 +211,17 @@ def heading_target(sc, cx, cy, psi_cmd, radius=150):
 
 def topdown(sc, rect, font, own: Track, foe: Track | None, weapon: Weapon, *,
             scale: float, in_wez: bool = False, lock_frac: float = 0.0,
-            guidance: dict | None = None, grid: bool = True):
+            autopilot: dict | None = None, grid: bool = True,
+            foe_wez: tuple[bool, bool] | None = None):
     """Plan view, own aircraft centred.
 
-    `guidance` is `{"psi_cmd": ..., "v_cmd_kt": ...}` when an autopilot is
+    `autopilot` is `{"psi_cmd": ..., "v_cmd_kt": ...}` when an autopilot is
     flying and None when a stick is; the difference is what gets overlaid.
+
+    `foe_wez` is `(he has me, he has held it)` and draws his cone as well as
+    yours.  Off by default because the bench can be flown with no opponent at
+    all; on, it is the only view that shows the two envelopes overlapping,
+    which is the whole geometry of a merge.
     """
     x0, y0, w, h = rect
     sc.fill(BG, rect)
@@ -240,9 +252,9 @@ def topdown(sc, rect, font, own: Track, foe: Track | None, weapon: Weapon, *,
             if len(pts) > 1:
                 pygame.draw.lines(sc, col, False, pts, 2)
 
-    if guidance is not None:
-        speed_vector(sc, font, cx, cy, s, guidance["v_cmd_kt"])
-        heading_target(sc, cx, cy, guidance["psi_cmd"])
+    if autopilot is not None:
+        speed_vector(sc, font, cx, cy, s, autopilot["v_cmd_kt"])
+        heading_target(sc, cx, cy, autopilot["psi_cmd"])
     else:
         # nose against track: bank rotates angle of attack into the horizontal
         # plane and the two split by as much as 27 deg in hard manoeuvring
@@ -258,6 +270,9 @@ def topdown(sc, rect, font, own: Track, foe: Track | None, weapon: Weapon, *,
         plane(sc, fx, fy, fs.psi, col, 16)
         if locked and not foe.dead:
             pygame.draw.circle(sc, WARN, (fx, fy), 22, 2)
+        if foe_wez is not None:
+            wez_wedge(sc, fx, fy, fs.psi, weapon, scale,
+                      foe_wez[0], foe_wez[1], hostile=True)
         (ax, ay, _), rng = aim_point(s, fs, weapon.muzzle_ms)
         sc.blit(font.render(f"{rng:,.0f} m", True, col), (fx + 18, fy - 6))
         # the pipper is where to point, and it is not where he is
@@ -453,11 +468,14 @@ def cockpit(sc, rect, fonts, own: Track, foe: Track | None, weapon: Weapon, *,
 # layout and readout
 # =============================================================================
 
-W, H = 1300, 860
-MAP_W = 880                 # left column: plan view over the altitude strip
-TOP_H = 566
-PROF_TOP = 574
-COCKPIT_H = 300             # right column: cockpit over the readout
+W, H = 1300, 860            # the shape the panel was designed at
+MAP_W = 880                 # and the proportions it was designed with,
+TOP_H = 566                 # kept as pixels because that is how they were
+PROF_TOP = 574              # measured; `Layout.resize` turns them into
+COCKPIT_H = 300             # fractions of whatever it is given
+
+READOUT_MIN_W = 420         # the width its longest key-help line needs
+READOUT_MAX_FRAC = 0.45     # ... but never more of the window than this
 
 
 class Layout:
@@ -465,6 +483,29 @@ class Layout:
 
     `manual_operation` and `auto_operation` differ in what they *put* in the
     readout, never in where anything sits.
+
+    **The arrangement is fixed; the proportions follow the window.**  Every
+    consumer takes a rect, so a differently shaped window is arithmetic here and
+    nothing anywhere else.
+
+        +-----------+---------+
+        |           | cockpit |
+        |  topdown  +---------+
+        |           |         |
+        +-----------+ readout |
+        |  profile  |         |
+        +-----------+---------+
+
+    A second, stacked arrangement for tall windows was built and thrown away:
+    the readout is twenty-five rows of text, the band it got gave it 360 px, and
+    it printed "panel is out of room" over itself.  Stretched into a tall column
+    instead it has *more* room than at the design size, because tall and narrow
+    is the shape a list of numbers wants.
+
+    The one thing that does not stretch is the readout's width: the key-help
+    lines are fixed strings, and at 331 px they lost their last word.  Hence
+    `READOUT_MIN_W`, with `READOUT_MAX_FRAC` so that a small window starves the
+    text rather than the map.
     """
 
     W, H = W, H
@@ -472,11 +513,33 @@ class Layout:
     profile = (12, PROF_TOP + 6, MAP_W - 24, H - PROF_TOP - 18)
     cockpit = (MAP_W, 0, W - MAP_W, COCKPIT_H)
     readout = (MAP_W, COCKPIT_H, W - MAP_W, H - COCKPIT_H)
+    world = (0, 0, MAP_W, H)
+    _lines: tuple = ()
 
-    @staticmethod
-    def dividers(sc):
-        pygame.draw.line(sc, (44, 50, 62), (MAP_W, 0), (MAP_W, H))
-        pygame.draw.line(sc, (44, 50, 62), (0, PROF_TOP - 4), (MAP_W, PROF_TOP - 4))
+    @classmethod
+    def resize(cls, w: int, h: int) -> None:
+        """Recompute every rect for a canvas of `w` x `h`."""
+        cls.W, cls.H = int(w), int(h)
+        right = min(max(READOUT_MIN_W, round(cls.W * (W - MAP_W) / W)),
+                    round(cls.W * READOUT_MAX_FRAC))
+        map_w = cls.W - right
+        prof_y = round(cls.H * PROF_TOP / H)
+        cock_h = round(cls.H * COCKPIT_H / H)
+        cls.topdown = (0, 0, map_w, round(cls.H * TOP_H / H))
+        cls.profile = (12, prof_y + 6, map_w - 24, cls.H - prof_y - 18)
+        cls.cockpit = (map_w, 0, right, cock_h)
+        cls.readout = (map_w, cock_h, right, cls.H - cock_h)
+        cls.world = (0, 0, map_w, cls.H)
+        cls._lines = (((map_w, 0), (map_w, cls.H)),
+                      ((0, prof_y - 4), (map_w, prof_y - 4)))
+
+    @classmethod
+    def dividers(cls, sc):
+        for a, b in cls._lines:
+            pygame.draw.line(sc, (44, 50, 62), a, b)
+
+
+Layout.resize(W, H)
 
 
 def fonts():
@@ -624,17 +687,79 @@ def stick_box(sc, font, x, y, size, ctl):
 # what both tools do around the drawing
 # =============================================================================
 
-def open_window(title: str):
-    """One window, one size, one set of fonts.  Returns (screen, fonts, clock).
+def open_window(title: str, size=None):
+    """One window, one layout, one set of fonts.  Returns (screen, fonts, clock).
 
     The two tools opened their own and picked their own font names -- close
     enough to look the same and different enough that a label fitted in one and
     clipped in the other.
+
+    **Resizable, and the drawing code does not know it.**  What comes back is a
+    fixed 1300x860 canvas -- the logical size every rectangle in `Layout` is
+    measured against -- and `present()` scales that onto whatever size the
+    window has been dragged to.  Drag it to half a screen and the panel shrinks
+    to fit rather than being cropped.
+
+    Two alternatives were passed over.  Reflowing the layout on `VIDEORESIZE`
+    puts a size calculation in front of every panel, for a window that is read
+    at a glance and never edited.  `pygame.SCALED` does the same job in one
+    flag, but the flag does not read back from `Surface.get_flags()` and a
+    second `set_mode` under it fails with "failed to create renderer", so
+    whether it engaged cannot be asserted in a test -- and an unverifiable
+    one-liner is worth less than twenty lines that `tests/` can check.
     """
     pygame.init()
-    screen = pygame.display.set_mode((Layout.W, Layout.H))
+    Layout.resize(*size or half_screen())
+    pygame.display.set_mode((Layout.W, Layout.H), pygame.RESIZABLE)
     pygame.display.set_caption(f"aircombat - {title}")
-    return screen, fonts(), pygame.time.Clock()
+    canvas = pygame.Surface((Layout.W, Layout.H))
+    return canvas, fonts(), pygame.time.Clock()
+
+
+def half_screen(margin: int = 80) -> tuple[int, int]:
+    """The right half of this monitor, less room for the title bar and taskbar.
+
+    The default rather than the designed 1300x860 because the thing people do
+    with this window is put it beside TacView, and a half-monitor default puts
+    it there without a drag.  `margin` is the vertical slice the window
+    decoration and the taskbar take; getting it wrong costs a scrollbar-free
+    window that is slightly too tall, not a broken layout.
+    """
+    try:
+        w, h = pygame.display.get_desktop_sizes()[0]
+    except (pygame.error, IndexError):
+        return W, H
+    return max(640, w // 2), max(480, h - margin)
+
+
+def blit_rect(window_size, canvas_size=None) -> pygame.Rect:
+    """Where the canvas lands in the window: biggest fit, centred.
+
+    Separated out so the aspect arithmetic is testable without a display.
+    """
+    cw, ch = canvas_size or (Layout.W, Layout.H)
+    ww, wh = window_size
+    k = min(ww / cw, wh / ch)
+    w, h = max(1, int(cw * k)), max(1, int(ch * k))
+    return pygame.Rect((ww - w) // 2, (wh - h) // 2, w, h)
+
+
+def present(canvas) -> None:
+    """Scale the canvas onto the window and flip.  Replaces `display.flip()`.
+
+    `smoothscale` rather than `scale`, because the panel is mostly small text
+    and nearest-neighbour makes 11 px labels unreadable the moment the window
+    is not an integer multiple of the canvas -- which is every size a person
+    drags to.
+    """
+    window = pygame.display.get_surface()
+    rect = blit_rect(window.get_size())
+    if rect.size == canvas.get_size():
+        window.blit(canvas, rect)
+    else:
+        window.fill((0, 0, 0))
+        window.blit(pygame.transform.smoothscale(canvas, rect.size), rect)
+    pygame.display.flip()
 
 
 def push(track: Track, t: float, cap: int = 2400) -> None:
@@ -652,8 +777,9 @@ def push(track: Track, t: float, cap: int = 2400) -> None:
 
 def world_views(sc, own: Track, foe: Track | None, weapon: Weapon, *,
                 scale: float, in_wez: bool = False, lock_frac: float = 0.0,
-                guidance: dict | None = None, alt_cmd_ft: float | None = None,
-                profile_autoscale: bool = False, fs_font=None):
+                autopilot: dict | None = None, alt_cmd_ft: float | None = None,
+                profile_autoscale: bool = False, fs_font=None,
+                foe_wez: tuple[bool, bool] | None = None):
     """The three pictures, in their fixed places.  The readout is the caller's.
 
     Everything above the readout is identical between hand-flying and watching
@@ -662,7 +788,8 @@ def world_views(sc, own: Track, foe: Track | None, weapon: Weapon, *,
     """
     sc.fill(BG)
     topdown(sc, Layout.topdown, fs_font, own, foe, weapon, scale=scale,
-            in_wez=in_wez, lock_frac=lock_frac, guidance=guidance)
+            in_wez=in_wez, lock_frac=lock_frac, autopilot=autopilot,
+            foe_wez=foe_wez)
     profile(sc, Layout.profile, fs_font, own, foe if profile_autoscale else None,
             alt_cmd_ft=alt_cmd_ft, autoscale=profile_autoscale)
     Layout.dividers(sc)
