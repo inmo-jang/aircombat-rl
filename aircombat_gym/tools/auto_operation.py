@@ -69,9 +69,12 @@ def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
     ep, kills, finished = 0, 0, 0
     speed_i, paused, wall = 0, False, 0.0
 
+    seat = getattr(env, "seat", "red")
+    foe_seat = "blue" if seat == "red" else "red"
+
     def refresh():
-        own.state = duel.ac["red"].state
-        foe.state = duel.ac["blue"].state
+        own.state = duel.ac[seat].state
+        foe.state = duel.ac[foe_seat].state
 
     def new_episode():
         nonlocal ep
@@ -146,8 +149,16 @@ def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
                 block.append(text(f"{label:<10}{value}",
                                   GOOD if ok else (DIM if ok is False else FG)))
 
+        # 오토파일럿 목표 = 정책이 방금 낸 액션
+        mine = duel.ac[seat]
         render.world_views(sc, own, foe, weapon, scale=scale, in_wez=in_wez,
-                           lock_frac=lock, profile_autoscale=True, fs_font=fs)
+                           lock_frac=lock, profile_autoscale=True, fs_font=fs,
+                           autopilot=dict(psi_cmd=mine.psi_cmd,
+                                          v_cmd_kt=mine.v_cmd_kt),
+                           alt_cmd_ft=mine.alt_cmd_ft,
+                           # 적기 원뿔도 -- 모든 task 가 양쪽을 무장시킨다
+                           foe_wez=(bool(info.get("opp_in_wez")),
+                                    info.get("under_track", 0.0) >= weapon.lock_s))
         render.cockpit(sc, Layout.cockpit, (f, fs), own, foe, weapon,
                        in_wez=in_wez, lock_frac=lock)
         readout.draw([

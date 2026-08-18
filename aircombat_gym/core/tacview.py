@@ -22,7 +22,6 @@ HANDSHAKE_MAGIC = "XtraLib.Stream.0\nTacview.RealTimeTelemetry.0\n"
 DEFAULT_PORT = 42674
 DEFAULT_PASSWORD = ""
 
-
 def _header(reference_time: str) -> str:
     return ("FileType=text/acmi/tacview\n"
             "FileVersion=2.1\n"
@@ -103,7 +102,8 @@ class AcmiFile(AcmiWriter):
     def __init__(self, path: str, reference_time: str = "2026-01-01T00:00:00Z") -> None:
         super().__init__(reference_time)
         self.path = path
-        self._fh = open(path, "w", encoding="utf-8-sig", newline="\n")
+        # BOM 을 붙이면 TacView 가 파일을 열지 못한다
+        self._fh = open(path, "w", encoding="utf-8", newline=chr(10))
         self.start()
 
     def _emit(self, text: str) -> None:
