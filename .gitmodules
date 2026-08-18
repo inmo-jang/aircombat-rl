@@ -1,0 +1,3 @@
+[submodule "solutions"]
+	path = solutions
+	url = https://github.com/inmo-jang/aircombat-rl-solutions.git

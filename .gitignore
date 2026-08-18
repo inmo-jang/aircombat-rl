@@ -14,10 +14,24 @@ runs/
 # TacView recordings
 *.acmi
 
+# Screen captures.  The raw grab is an intermediate -- a 25 s desktop
+# recording is 175 MB, which GitHub refuses outright at 100 MB.  What ships
+# is the GIF made from it, which lives next to the README that shows it.
+*.mkv
+*.mp4
+!**/docs/*.gif
+
 # The answer key.  A student repo is downstream of this one, so once this lands
 # in history it cannot be taken back out.  Moves to a private submodule later.
-solutions/
+# solutions/
 
-# Superseded experiments, kept on disk for reference only.  141 MB of old
-# checkpoints does not belong in anyone's clone.
+# Superseded work, kept on disk for reference only -- old checkpoints, runs
+# whose spec has since changed, results that today's code cannot even load.
+# Hundreds of MB of that does not belong in anyone's clone.
+#
+# No leading slash, so this matches an `archived/` directory at ANY depth:
+# `archived/` at the root, `solutions/project_01_circular/archived/`, and any
+# that appear later.  The convention is one `archived/` per folder that needs
+# one, rather than one central graveyard -- superseded results stay next to the
+# code that produced them, which is where anyone looking for them will be.
 archived/
