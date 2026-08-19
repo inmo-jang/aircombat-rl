@@ -1,4 +1,4 @@
-"""Step-response benchmark for the guidance layer (gate B1).
+"""Step-response benchmark for the autopilot (gate B1).
 
 Three commands, each from trimmed level flight, each timed to settle:
 
@@ -11,7 +11,7 @@ Three columns, because settling time on its own lies.  A controller can
 So `overshoot` (counted only after the target is first reached) and
 `side effect` (what the other axes gave up) are there to catch that.
 
-Run it after touching anything in `core/control/guidance.py`.  The gains there
+Run it after touching anything in `core/control/autopilot.py`.  The gains there
 were set from these numbers -- the tables in that module's comments are this
 tool's output at 320/450/600 kt.
 
@@ -30,7 +30,7 @@ import argparse
 import math
 
 from aircombat_gym.core.aircraft import Aircraft
-from aircombat_gym.core.control.guidance import Guidance, GuidanceGains, wrap_pi
+from aircombat_gym.core.control.autopilot import Autopilot, wrap_pi
 from aircombat_gym.core.envelope import (ALT_MAX_FT, ALT_MIN_FT, V_MAX_KT,
                                          V_MIN_KT)
 
@@ -42,7 +42,7 @@ def _clip(v, lo, hi):
 def _run(alt, v, *, d_alt=0.0, d_v=0.0, d_psi=0.0, t_max=180.0,
          gains=None, tol_alt=200.0, tol_v=10.0, tol_psi=2.0):
     """One step command.  Returns (t_settle, peak overshoot, worst side effect)."""
-    ac = Aircraft(h0_ft=alt, guidance=Guidance(h0_ft=alt, gains=gains))
+    ac = Aircraft(h0_ft=alt, autopilot=Autopilot(h0_ft=alt, gains=gains))
     ac.reset(v_kt=v)
     for _ in range(60):                      # let the trim settle
         ac.hold()

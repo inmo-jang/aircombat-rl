@@ -2,7 +2,7 @@
 
 Four groups, and the last one is the one that matters:
 
-    spec        37 channels, frozen order, raw SI -- a policy binds to all three
+    spec        39 channels, frozen order, raw SI -- a policy binds to all three
     assignment  registration, closed channels, action round-trip
     no reward   D10, enforced by an AST walk over the package
     playable    `ace` can actually win, a policy is expressible from the raw
@@ -34,7 +34,7 @@ import pytest
 import aircombat_gym.wvr.envs                                    # registers ids
 from aircombat_gym.wvr import obs as O
 from aircombat_gym.wvr.envs import ENVS
-from aircombat_gym.wvr.envs.base import ALTITUDE, HEADING, SPEED
+from aircombat_gym.wvr.envs.base import ALTITUDE
 from aircombat_gym.wvr.envs.circular import ALT_FT, CircularTargetEnv
 from aircombat_gym.wvr.baselines import Ace, Pursuit
 
@@ -54,12 +54,82 @@ def _env(**kw):
 def test_spec_is_frozen():
     """A policy binds to the width and the order.  Changing either silently
     turns every saved checkpoint into garbage that still loads."""
-    assert O.STATE_SPEC_VERSION == 1
-    assert O.STATE_DIM == 37
+    assert O.STATE_SPEC_VERSION == 2
+    assert O.STATE_DIM == 39
     assert O.STATE_NAMES[:3] == ("own_x", "own_y", "own_h")
     assert O.STATE_NAMES[15:18] == ("opp_x", "opp_y", "opp_h")
-    assert O.STATE_NAMES[-1] == "dist_to_boundary"
+    assert O.STATE_NAMES[-1] == "t_remaining"
     assert len(set(O.STATE_NAMES)) == O.STATE_DIM, "duplicate channel name"
+
+
+def test_every_channel_is_paired_except_the_clock():
+    """v2's promise: swapping seats permutes the vector into itself.
+
+    Anything named `own_*` needs an `opp_*` twin or the mirror test below has
+    nothing to compare against, and a one-sided panel is what taught the answer
+    key to pay for its own aim angle twenty-one times running."""
+    own = {n[4:] for n in O.STATE_NAMES if n.startswith("own_")}
+    opp = {n[4:] for n in O.STATE_NAMES if n.startswith("opp_")}
+    assert own == opp, f"unpaired: {own ^ opp}"
+    shared = [n for n in O.STATE_NAMES
+              if not n.startswith(("own_", "opp_"))]
+    assert shared == ["t_remaining"], shared
+
+
+def test_the_two_seats_see_mirror_images():
+    """`obs_for("red")` mirrored is `obs_for("blue")`, at the same instant.
+
+    Cheap, and it guards the expensive thing.  When `ace` in both seats lost as
+    red 100 times out of 100, eleven candidate causes were ruled out one at a
+    time before the answer turned out to be the map projection; a standing
+    assertion that the two cockpits are reflections would have cut that search
+    in half by clearing the code path immediately."""
+    from aircombat_gym.wvr.envs.advantaged import AdvantagedFightEnv
+    e = AdvantagedFightEnv(seed=0)
+    e.reset(seed=0)
+    for _ in range(20):
+        e.step(e.action_space.sample())
+        snap = e._last
+        red, blue = e.obs_for("red", snap), e.obs_for("blue", snap)
+        bad = np.flatnonzero(~np.isclose(O.mirror(red), blue, atol=1e-5))
+        assert bad.size == 0, \
+            f"seats disagree on {[O.STATE_NAMES[i] for i in bad]}"
+
+
+def test_flying_the_other_seat_is_the_same_game():
+    """`seat="blue"` must equal `seat="red"` with the geometry swapped.
+
+    This is the property assignment 05 rests on: a tournament puts each
+    submission in both seats and the seat itself must not be worth anything."""
+    from aircombat_gym.wvr.envs.advantaged import AdvantagedFightEnv
+    from aircombat_gym.wvr.envs.base import Initial
+
+    def run(seat, swap):
+        class M(AdvantagedFightEnv):
+            pass
+        M.seat = seat
+        e = M(seed=0)
+        base_sample = AdvantagedFightEnv.sample
+
+        def sample(self, rng):
+            ic, foe = base_sample(self, rng)
+            if swap:
+                ic = Initial(ic.name, (ic.xy[1], ic.xy[0]),
+                             (ic.psi_deg[1], ic.psi_deg[0]),
+                             (ic.v_kt[1], ic.v_kt[0]),
+                             (ic.alt_ft[1], ic.alt_ft[0]))
+            return ic, foe
+        M.sample = sample
+        obs, _ = e.reset(seed=7)
+        trail = []
+        for _ in range(60):
+            obs, _, t1, t2, info = e.step(4)
+            trail.append(float(info["range"]))
+            if t1 or t2:
+                break
+        return trail
+
+    assert np.allclose(run("red", False), run("blue", True), atol=1e-6)
 
 
 def test_every_task_hands_out_the_same_observation():
@@ -232,7 +302,7 @@ def test_the_observation_stays_finite_under_random_play():
 
 
 def test_a_winning_policy_is_expressible_from_the_raw_observation():
-    """Rebuild `ace` reading nothing but the 37 raw channels.
+    """Rebuild `ace` reading nothing but the 39 raw channels.
 
     This is the assignment's own `ObsWrapper` exercise, run as a test.  If a
     hand-derived transform scores what the bot scores off the referee's dict,

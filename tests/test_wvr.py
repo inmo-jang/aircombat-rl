@@ -18,15 +18,12 @@ from __future__ import annotations
 
 import inspect
 import math
-import re
-
-import numpy as np
-import pytest
+import pathlib
 
 from aircombat_gym.wvr import actions as act
-from aircombat_gym.wvr.baselines import ALL as ALL_BOTS
+from aircombat_gym.wvr.baselines import LADDER as ALL_BOTS
 from aircombat_gym.wvr.envs.circular import CircularTargetEnv
-from aircombat_gym.wvr.baselines import Ace, Bot, Circler, Lead, Pursuit
+from aircombat_gym.wvr.baselines import Ace
 from aircombat_gym.wvr.engagement import WEZ_ATA_DEG, WEZ_R_MAX, WEZ_R_MIN, look
 
 
@@ -94,55 +91,61 @@ def test_bots_are_behaviourally_distinct():
     assert not dupes, f"identical bot behaviour: {list(dupes.values())}"
 
 
-def test_every_bot_flies_in_the_keyboard_tool():
-    """The tool and the env must hand a bot the same thing.
+def test_the_bench_and_the_tasks_share_one_weapon():
+    """The keyboard bench must not have its own opinion about the gun.
 
-    Two real breakages, both silent until someone actually tried a bot the tool
-    had never run.  `_Foe` never called `bot.reset()`, so anything with state
-    (`Circler`'s rate carry, `Evader`'s break timer) died on its first act()
-    -- including `--enemy circler`, the command the student README documents.
-    And `_bot_view` omitted `lead_signed`, which is what `ace` steers on.
+    It had four: a 0.6 s lock against the tasks' 1.0, a 15 deg cone against 30,
+    the three-factor damage model against a flat 0.33, and only one of the two
+    guns modelled at all.  Each half was internally consistent, so flying by
+    hand felt fine and taught a game nobody was graded on -- the same shape of
+    failure as the two renderers that disagreed about the cone.
+    """
+    from aircombat_gym.tools import manual_operation as M
+    from aircombat_gym.wvr.envs.base import DuelEnv
+
+    src = inspect.getsource(M)
+    assert "_bot_view" not in src.replace("`_bot_view`", ""), \
+        "the bench is building its own view for the bots again"
+    assert "TRACK_LOCK" not in src, "the bench has its own lock again"
+    # and it reads the referee's numbers rather than restating them
+    for name in ("health", "track", "wez_time", "eng", "cone_deg", "lock_s"):
+        assert isinstance(getattr(M._Foe, name), property), \
+            f"_Foe.{name} is not a view onto Combat"
+    assert DuelEnv.track_lock == 1.0 and DuelEnv.flat_damage == 0.33
+
+
+def test_every_bot_flies_in_the_keyboard_tool():
+    """Every scripted opponent survives being flown by the bench.
+
+    `_Foe` never called `bot.reset()`, so anything with state (`Circler`'s rate
+    carry, `Evader`'s break timer) died on its first act() -- including
+    `--enemy circler`, the command the student README documents.  The bots now
+    read `Combat.observe()` directly, which is what makes "the same objects fly
+    here" true rather than aspirational, but they still have to actually fly.
     """
     import math
     import os
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     from aircombat_gym.core.aircraft import Aircraft
-    from aircombat_gym.core.envelope import H0_FT, V_MAX_KT
+    from aircombat_gym.core.envelope import V_MAX_KT
     from aircombat_gym.tools import manual_operation as M
-    
+    from aircombat_gym.wvr.envs.base import (ARENA_R, SIDES, Combat, DuelEnv,
+                                             Initial)
+
     for name, cls in sorted(M.OPPONENTS.items()):
-        me = Aircraft(h0_ft=H0_FT)
-        me.reset(x=0.0, y=-2000.0, psi=0.0, v_kt=450.0)
-        foe = M._Foe(cls(), h0_ft=H0_FT, v_kt=0.5 * V_MAX_KT,
-                     x=0.0, y=0.0, psi=math.pi / 2)
+        combat = Combat(t_max=1e9, track_lock=DuelEnv.track_lock,
+                        flat_damage=DuelEnv.flat_damage,
+                        wez_cone_deg=DuelEnv.wez_cone_deg,
+                        arena_m=ARENA_R, armed=SIDES)
+        combat.reset(Initial("bench", ((0.0, -2000.0), (0.0, 0.0)),
+                             (0.0, 90.0), (450.0, 0.5 * V_MAX_KT)))
+        foe = M._Foe(cls(), combat)
         for _ in range(60):
-            foe.observe(me.step(0.0, 0.0, 0.0))
-            foe.step(1.0 / 20.0)
-        assert foe.state.flyable, f"{name} left the tool in a broken state"
-
-    # The two dicts have to agree, and the direction matters.  Asserting only
-    # `tool_keys <= duel_keys` -- "the tool invents nothing" -- is the wrong way
-    # round: the breakage that actually happened was the tool *omitting*
-    # `lead_signed`, which a subset check cannot see.  Check both.
-    env = CircularTargetEnv()
-    env.reset(seed=0)
-    duel_keys = set(env._combat.observe()["blue"])
-    tool_keys = set(foe._bot_view())
-    assert tool_keys <= duel_keys, (
-        f"the tool invents keys the env does not have: {tool_keys - duel_keys}")
-
-    read = set()
-    for cls in M.OPPONENTS.values():
-        for src in (inspect.getsource(cls.act),
-                    inspect.getsource(cls.reset)):
-            read |= set(re.findall(r'info\["(\w+)"\]', src))
-    for base in (Bot,):
-        for m in ("_turn", "_match_alt"):
-            read |= set(re.findall(r'info\["(\w+)"\]',
-                                   inspect.getsource(getattr(base, m))))
-    assert read <= tool_keys, (
-        f"bots read keys the tool does not provide: {sorted(read - tool_keys)}")
-
+            info = combat.observe()
+            combat.step({"red": (0.0, 0.0, 0.0), "blue": foe.act(info["blue"])})
+            foe.timeline()
+        assert foe.state.flyable, f"{name} left the bench in a broken state"
+        assert combat.ac["red"].state.flyable, f"{name}: our aircraft broke"
 
 def test_bots_emit_legal_three_channel_actions():
     """The heading grid went from five wide to three on 2026-08-11 and
@@ -214,3 +217,157 @@ def test_the_same_seed_gives_the_same_fight():
 # reference reward broke it by 12x, and the one before this rewrite by 5x.  It
 # returns in `test_envs.py` against the new reward, where it belongs: the
 # reward now lives in the answer code, not in the package.
+
+
+def test_the_designed_size_is_unchanged_by_the_resize_arithmetic():
+    """`Layout.resize(1300, 860)` must reproduce the hand-measured rectangles.
+
+    The proportions became fractions so the window could be dragged; if the
+    arithmetic drifts even a pixel at the design size, every screenshot and
+    every number in this file's sibling docs is describing a different panel.
+    """
+    from aircombat_gym.tools import render
+
+    render.Layout.resize(render.W, render.H)
+    assert render.Layout.topdown == (0, 0, 880, 566)
+    assert render.Layout.profile == (12, 580, 856, 268)
+    assert render.Layout.cockpit == (880, 0, 420, 300)
+    assert render.Layout.readout == (880, 300, 420, 560)
+
+
+def test_the_panel_fits_whatever_shape_the_window_is():
+    """Nothing overflows, and the readout keeps the width its text needs.
+
+    Rendering a tall window is what found both of these: a stacked arrangement
+    gave the readout 360 px of height and it overprinted itself, and stretching
+    the columns gave it 331 px of width and the key help lost its last word.
+    """
+    from aircombat_gym.tools import render
+
+    for w, h in ((1300, 860), (1024, 1200), (2048, 1280), (960, 540)):
+        render.Layout.resize(w, h)
+        for name in ("topdown", "profile", "cockpit", "readout"):
+            x, y, rw, rh = getattr(render.Layout, name)
+            assert x >= 0 and y >= 0, f"{name} off the canvas at {w}x{h}"
+            assert x + rw <= w and y + rh <= h, f"{name} overflows at {w}x{h}"
+        assert render.Layout.readout[2] >= render.READOUT_MIN_W,             f"readout too narrow for its text at {w}x{h}"
+    render.Layout.resize(render.W, render.H)
+
+
+def test_the_window_scales_instead_of_cropping():
+    """Drag the window anywhere and the whole panel is still on screen.
+
+    The tools draw onto a fixed 1300x860 canvas and `present()` fits it into
+    whatever the window has become, so the aspect must survive and the fit must
+    never overflow -- a panel cropped at the edge loses the readout column,
+    which is where every number lives.
+    """
+    from aircombat_gym.tools import render
+
+    cw, ch = render.Layout.W, render.Layout.H
+    for size in ((cw, ch), (960, 1080), (1920, 1080), (640, 480), (2560, 880)):
+        r = render.blit_rect(size)
+        assert r.w <= size[0] and r.h <= size[1], f"overflows at {size}"
+        assert abs(r.w / r.h - cw / ch) < 0.01, f"aspect lost at {size}"
+        assert r.x >= 0 and r.y >= 0, f"off the top-left at {size}"
+        # centred: the two margins differ by at most the odd pixel
+        assert abs((size[0] - r.w) - 2 * r.x) <= 1
+        assert abs((size[1] - r.h) - 2 * r.y) <= 1
+
+
+def test_every_overlay_branch_draws():
+    """`p`, a handover, a low warning, a kill -- each has its own overlay.
+
+    None of them was covered, and a refactor that hoisted a coordinate into the
+    first branch went unnoticed until someone pressed `p` and the window closed:
+    the other branches ran with the name unbound.  The overlays are the only
+    part of the panel with real control flow, so they are the part worth
+    driving.
+    """
+    import os
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import pygame
+    from aircombat_gym.tools import render, manual_operation as M
+    from aircombat_gym.core.aircraft import Aircraft
+
+    screen, fonts, _ = render.open_window("overlay test")
+    ac = Aircraft()
+    ac.reset(x=0.0, y=0.0, psi=0.0, v_kt=400.0)
+    s = ac.state
+    ctl = dict(aileron=0.0, elevator=0.0, rudder=0.0, throttle=0.5)
+    meter = M._Meter()
+
+    cases = {"running": dict(paused=False, crash=None, handover=None),
+             "paused": dict(paused=True, crash=None, handover=None),
+             "handover": dict(paused=False, crash=None, handover=(1.0, "STICK")),
+             "crashed": dict(paused=False, crash=(9.0, 420.0, -30.0, 500.0),
+                             handover=None)}
+    for name, kw in cases.items():
+        try:
+            M._panel(screen, fonts, ac, s, ctl, (0.0, 0.0, 0.0), 8.0,
+                     meter=meter, live=None, rtf=1.0, layer="AUTOPILOT",
+                     cmd_mode="CONTINUOUS", throttle_cap=1.0, ramp_s=0.6, **kw)
+        except NameError as e:                     # the bug this test exists for
+            raise AssertionError(f"{name} overlay: {e}") from None
+    pygame.quit()
+
+
+def test_importing_the_package_does_not_pull_in_a_viewer():
+    """`wvr.play` reaches up into `tools/` -- importing `wvr` must not.
+
+    The hand-play harness reuses the renderer rather than growing a second one,
+    which points the wrong way through the layers: `tools` is built on `wvr`.
+    That is affordable exactly because `wvr/__init__` does not import `play`,
+    so the dependency only exists while the script runs.  Asserted rather than
+    asserted-in-a-comment: a stray top-level import in any env module would
+    make every downstream user of the gym depend on pygame.
+    """
+    import subprocess
+    import sys
+    probe = ("import sys; import aircombat_gym.wvr.envs; "
+             "print(int('pygame' in sys.modules), int('torch' in sys.modules))")
+    import aircombat_gym
+    repo = pathlib.Path(aircombat_gym.__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                         text=True, cwd=str(repo))
+    assert out.returncode == 0, out.stderr[-400:]
+    pg, torch = out.stdout.split()[-2:]
+    assert pg == "0", "importing the gym pulled in pygame"
+    assert torch == "0", "importing the gym pulled in torch"
+
+
+def test_every_environment_is_reachable_from_the_hand_play_harness():
+    """`--env` must list all of them.  The module asserts it at import time;
+    this makes the failure a test rather than a crash on someone's first run."""
+    from aircombat_gym.wvr import play
+    from aircombat_gym.wvr.envs import ENVS
+    assert set(play.ENV_BY_NAME.values()) == set(ENVS)
+
+
+def test_swapping_the_action_space_keeps_the_episode():
+    """`m` in the hand-play harness changes the space and nothing else.
+
+    The point of the toggle is to feel the same engagement under both action
+    spaces, which is worthless if switching respawns it -- and a respawn would
+    be easy to ship unnoticed, because the picture would still look plausible.
+    """
+    from aircombat_gym.wvr.envs.advantaged import AdvantagedFightEnv
+
+    env = AdvantagedFightEnv()
+    env.reset(seed=5)
+    for _ in range(20):
+        env.step(4)
+    before = (env._combat.t, env._combat.ac["red"].state.x,
+              env._combat.ac["blue"].state.y, env._combat.health["blue"])
+
+    env.set_action_mode("continuous")
+    assert env.action_space.shape == (2,)
+    after = (env._combat.t, env._combat.ac["red"].state.x,
+             env._combat.ac["blue"].state.y, env._combat.health["blue"])
+    assert before == after, "the toggle disturbed the engagement"
+
+    # and the new space is actually usable
+    env.step(env.action_space.sample())
+    env.set_action_mode("discrete")
+    assert env.action_space.n == 9
+    env.step(4)

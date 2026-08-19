@@ -180,7 +180,7 @@ def test_a_tap_climbs_by_the_amount_it_asked_for():
     """The vertical channel has to actually go where it was sent.
 
     This replaces an older test that asserted the opposite -- that no action
-    could leave H0 -- which was the 2D-era `guidance_locked` configuration.  That
+    could leave H0 -- which was the 2D-era `autopilot_locked` configuration.  That
     configuration is gone: with the vertical shut, energy management does not pay
     (workplan 3.2.9), so opening it is the game rather than an option.  What
     needs guarding now is that the channel works in both directions and that a
