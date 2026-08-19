@@ -2,6 +2,20 @@
 
 Air combat environments on a JSBSim F-16.
 
+```bash
+pip install -e .
+python -m aircombat_gym.wvr.play --env circular      # fly one yourself
+```
+
+From Python:
+
+```python
+import gymnasium as gym
+import aircombat_gym.wvr.envs          # registers the ids
+
+env = gym.make("AirCombat/Circular-v0")
+```
+
 ## Environments
 
 | | |
