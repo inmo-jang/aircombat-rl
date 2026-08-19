@@ -65,17 +65,6 @@ def test_wez_range_matches_the_turn_geometry():
     assert WEZ_ATA_DEG <= 45.0
 
 
-# A reachability test lived here and was removed on 2026-08-11.  It asserted
-# `DAMAGE_RATE * dwell * factor >= 1.0` from the module constant, and the
-# numbers came from a geometry that no longer exists (15 deg cone, +-5,000 ft
-# altitude spread).  The rule it protected is still the right rule -- *a
-# terminal nobody can reach is not a terminal* -- but arithmetic on a module
-# constant is the wrong way to check it, and the constant is not even what the
-# assignment uses (`Combat(flat_damage=...)` replaces the whole damage model).
-# It comes back in `test_envs.py` as an empirical check: fly `ace` against the
-# configured task and assert a kill actually happens.
-
-
 # --------------------------------------------------------------------------
 # bots
 # --------------------------------------------------------------------------
@@ -148,7 +137,7 @@ def test_every_bot_flies_in_the_keyboard_tool():
         assert combat.ac["red"].state.flyable, f"{name}: our aircraft broke"
 
 def test_bots_emit_legal_three_channel_actions():
-    """The heading grid went from five wide to three on 2026-08-11 and
+    """The heading grid is three wide and
     `DELTA_HEADING_DEG[-2]`, which two bots used for a "soft" turn, silently
     became 0.0.  Every bot has to land on the grid the policy shares."""
     env = CircularTargetEnv()
@@ -167,20 +156,6 @@ def test_bots_emit_legal_three_channel_actions():
 # --------------------------------------------------------------------------
 # the game
 # --------------------------------------------------------------------------
-
-# Six tests were removed here on 2026-08-11 with `envs/gym_env.py`, the
-# 18-channel `DogfightEnv` that `wvr/envs/base.py` replaced.  Four of them tested that
-# wrapper and nothing else.  The two worth keeping moved to `test_envs.py`
-# against the 37-channel spec: the observation stays finite, and a winning
-# policy is expressible from the observation alone.
-#
-# One did *not* survive the move, and the reason is worth recording.
-# `test_observation_is_symmetric_between_seats` asserted that a head-on start
-# looks identical from both chairs -- true of the old egocentric encoding, and
-# false of raw state, where the two aircraft have different absolute positions
-# by construction.  That is a real consequence of the new spec rather than an
-# oversight: seat symmetry now has to be produced by the student's transform,
-# and self-play on a later rung will need it.
 
 
 def test_the_same_seed_gives_the_same_fight():
@@ -204,19 +179,6 @@ def test_the_same_seed_gives_the_same_fight():
 # --------------------------------------------------------------------------
 # the learnability floor
 # --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
-
-# Four tests lived here and were removed on 2026-08-11: they imported the
-# reference reward totals from `training/lib/rewards.py`, and `training/` moved
-# to `archived/` when the task spec changed (observation, action space and
-# algorithm all replaced -- see project_01_circular.md 7).
-#
-# The rule they enforced is workplan 2.5 and is still load-bearing -- the first
-# reference reward broke it by 12x, and the one before this rewrite by 5x.  It
-# returns in `test_envs.py` against the new reward, where it belongs: the
-# reward now lives in the answer code, not in the package.
 
 
 def test_the_designed_size_is_unchanged_by_the_resize_arithmetic():

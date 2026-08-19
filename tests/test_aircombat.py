@@ -1,16 +1,8 @@
 """Regression tests for the flight layer.
 
-Every test here exists because something silently went wrong once.  Four are the
-ones docs/conversation_log.md section 10 marks as "must be reproduced":
-position signs, crossing the origin, the gun line at the vertical, and reset
-repeatability after violent flight.  None of the four raised an exception when
-they were broken -- all showed up as "this number looks wrong", which is exactly
-what a test suite is for.
-
-The game and learning layers are in `archived/` for now, and their tests went
-with them (`archived/test_game_and_learning.py`).  Bring the tests
-back with the module they cover -- restoring code without its test is how this
-project lost a day to four mistakes in one session.
+Every test here exists because something silently went wrong once -- position
+signs, crossing the origin, the gun line at the vertical, reset repeatability
+after violent flight.  None of them raised an exception when they were broken.
 
 These live outside the package on purpose.  `aircombat_gym` is what students
 install and import; a test suite is not part of what it does, and keeping it out
@@ -52,7 +44,7 @@ def test_every_action_decodes_and_is_unique():
 
 # --------------------------------------------------------------------------
 # gate H5 -- simulator hygiene.  The engine being off silently invalidated a
-# whole set of measurements once (workplan 3.2.4).
+# whole set of measurements once.
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("kt", [300.0, 450.0, 600.0])
@@ -68,7 +60,7 @@ def test_h5_trimmed_flight_is_sane(kt):
 
 
 # --------------------------------------------------------------------------
-# the four the conversation log marks as mandatory
+# the four that must be reproduced
 # --------------------------------------------------------------------------
 
 def test_position_signs_follow_the_heading():
@@ -116,10 +108,7 @@ def test_gun_line_does_not_spin_at_the_vertical():
 
 
 def test_reset_is_repeatable_after_violent_flights():
-    """run_ic() alone leaves the FCS integrators loaded (TRAP-2).
-
-    This is the test that would have saved an entire H4 tournament.
-    """
+    """run_ic() alone leaves the FCS integrators loaded (TRAP-2)."""
     def probe(ac):
         ac.reset(v_kt=450.0)
         for _ in range(60):
@@ -164,7 +153,7 @@ def test_structural_limit_is_enforced():
 
 
 def test_altitude_lock_holds_under_random_commands():
-    """Gate L2, shortened.  The full 300 s version lives in preflight/."""
+    """Gate L2, shortened."""
     rng = np.random.default_rng(0)
     ac = Aircraft()
     ac.reset(v_kt=400.0)
@@ -177,15 +166,8 @@ def test_altitude_lock_holds_under_random_commands():
 
 
 def test_a_tap_climbs_by_the_amount_it_asked_for():
-    """The vertical channel has to actually go where it was sent.
-
-    This replaces an older test that asserted the opposite -- that no action
-    could leave H0 -- which was the 2D-era `autopilot_locked` configuration.  That
-    configuration is gone: with the vertical shut, energy management does not pay
-    (workplan 3.2.9), so opening it is the game rather than an option.  What
-    needs guarding now is that the channel works in both directions and that a
-    zero delta still freezes the target it arrived at.
-    """
+    """The vertical channel has to go where it was sent, both directions, and a
+    zero delta has to freeze the target it arrived at."""
     for delta in (1000.0, -1000.0):
         ac = Aircraft()
         ac.reset(v_kt=450.0)

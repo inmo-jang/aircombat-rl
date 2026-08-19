@@ -1,8 +1,7 @@
 """JSBSim F-16 backend.
 
 Five things about JSBSim will silently produce wrong physics rather than an
-error.  Each is handled below and each is marked TRAP-n; do not remove one
-without reading docs/conversation_log.md section 5 first.
+error.  Each is handled below and marked TRAP-n.
 
   TRAP-1  Neither run_ic() nor do_trim() starts the engine.  Measured with it
           off you get -1,351 lbf of windmilling drag and a glider.

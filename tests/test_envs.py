@@ -11,10 +11,8 @@ Four groups, and the last one is the one that matters:
 The weapon model and the scripted bots are in `test_wvr.py`; the flight model
 and the envelope are in `test_aircombat.py`.
 
-Two of these replace tests that were deleted on 2026-08-11 when `training/` was
-archived and the reward moved out of the repo.  The rules they enforced are
-still the right rules, so they come back here, checked against the environment instead
-of against a module constant:
+Two of these check a rule against the environment rather than against a module
+constant:
 
   * `test_ace_can_actually_win` -- a terminal nobody can reach is not a
     terminal.  The old version did arithmetic on `DAMAGE_RATE`; this one flies.

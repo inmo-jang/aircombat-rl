@@ -1,8 +1,7 @@
 """Flight envelope constants, measured from JSBSim F-16 at H0.
 
-Every number here came out of `preflight/` (see docs/workplan.md 3.2.6).  Nothing in
-this file is a guess; if you change H0 you must re-run the measurements, because
-n_max is a function of dynamic pressure and these were all taken at 20,000 ft.
+Every number was measured at H0, not guessed.  Change H0 and they have to be
+measured again: `n_max` is a function of dynamic pressure.
 
 The one that matters most is `max_bank`.  It is what makes the 2D lock possible:
 by never commanding more bank than the current speed can hold in level flight,
@@ -54,37 +53,9 @@ V_MIN_KT = 300.0
 V_MAX_KT = 650.0
 
 # --- throttle ceiling (D23) -------------------------------------------------
-# Not physics -- a game-balance knob.  It was 0.75, and here is the whole story
-# so the next person does not have to re-derive it.
-#
-# The argument for capping: at full afterburner the sustained turn rate is 83 %
-# of the instantaneous one, so burning energy costs almost nothing, "always turn
-# hard" dominates and the decision the game is built around disappears (H4).
-# 0.75 opened that gap to 1.52x.
-#
-# The argument for not capping, which won for now:
-#
-#   * that measurement was taken with altitude LOCKED.  Opening the vertical
-#     gave energy a second store and a second penalty -- turning hard also means
-#     not buying height, and height is worth 17.7 deg/s at the floor against 9.4
-#     at the ceiling.  Whether 1.20x is still degenerate in 3D is unmeasured,
-#     and carrying 2D conclusions into 3D is exactly how this project has gone
-#     wrong before (docs/workplan.md 3.2.12).
-#   * it costs less than it looks.  V_MAX_KT is the binding constraint above
-#     ~0.89: the speed loop targets 650 kt and never asks for more throttle than
-#     that needs, so raising the cap past 0.9 changes nothing in level flight.
-#     Measured at 20,000 ft: cap 1.00 issues throttle 0.888, same as cap 0.90.
-#   * what it does change is how fast the aircraft gets there -- 300 -> 500 kt
-#     takes 25.9 s at 0.75 against 20.2 s uncapped, 22 % quicker.  Top speed is
-#     unchanged.  So the balance effect is confined to recovery rate.
-#
-# Gate H4 decides this, not an opinion: run the bot round-robin in 3D and see
-# whether degenerate strategies beat strategic ones.  That gate is archived with
-# the game layer.  If it comes back degenerate, put this back to 0.75 -- one
-# constant, and everything reads it from here.
-#
-# It must be settled BEFORE the assignment ships: changing it after students
-# have started training invalidates their runs.
+# A game-balance knob, not physics.  Uncapped: `V_MAX_KT` binds above ~0.89, so
+# raising it past 0.9 changes nothing in level flight -- what it changes is how
+# fast the aircraft recovers speed.
 THROTTLE_CAP = 1.00
 
 # --- lift held back for altitude control -------------------------------------

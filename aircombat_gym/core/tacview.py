@@ -155,9 +155,8 @@ class AcmiRealtime(AcmiWriter):
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((host, port))
-        # A backlog of 1 meant TacView's retries timed out behind the stale
-        # connection it had already given up on: attempt 1 connected, 2-5 did
-        # not.  Measured 2026-08-11.
+        # A backlog of 1 makes TacView's retries time out behind the stale
+        # connection it has already given up on.
         self._srv.listen(8)
         self._sock: socket.socket | None = None
 
