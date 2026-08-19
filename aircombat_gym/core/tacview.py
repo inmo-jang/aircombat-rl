@@ -44,6 +44,8 @@ class AcmiWriter:
         self._colour: dict[str, str] = {}
         self._locked: dict[str, str | None] = {}
         self._last_t = -1.0
+        #: events whose objects are not declared yet
+        self._pending: list[tuple[str, list[str]]] = []
 
     # -- to be provided by the sink ------------------------------------------
     def _emit(self, text: str) -> None:
@@ -86,10 +88,23 @@ class AcmiWriter:
                                    o.get("roll", 0.0), o.get("pitch", 0.0),
                                    o.get("yaw", 0.0), props))
         self._emit("".join(chunk))
+        if self._pending:
+            held, self._pending = self._pending, []
+            for text, ids in held:
+                self.event(text, *ids)
 
     def event(self, text: str, *object_ids: str) -> None:
-        """A timeline marker.  Shows in TacView's event log and on the seek bar."""
-        parts = "|".join(str(i) for i in object_ids)
+        """A timeline marker.  Shows in TacView's event log and on the seek bar.
+
+        Held until every object it names has been declared.  TacView refuses a
+        file whose first event references ids it has not seen -- and the first
+        event of a recording normally lands before the first frame.
+        """
+        ids = [str(i) for i in object_ids]
+        if any(i not in self._declared for i in ids):
+            self._pending.append((text, ids))
+            return
+        parts = "|".join(ids)
         self._emit(f"0,Event=Message|{parts}|{text}\n" if parts
                    else f"0,Event=Message|{text}\n")
 
