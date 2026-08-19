@@ -3,6 +3,8 @@
 Shoot down a target flying a steady turn.  You design what the policy sees and
 what it is paid; the algorithm comes from `stable-baselines3`.
 
+![the task](demo.gif)
+
 ## What you hand in
 
 The folder [`baseline/`](baseline/), whole:

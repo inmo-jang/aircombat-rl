@@ -4,6 +4,8 @@ Shoot down an opponent that shoots back, from a start that favours neither of
 you.  You design what the policy sees and what it is paid; the algorithm comes
 from `stable-baselines3`.
 
+![the task](demo.gif)
+
 ## What you hand in
 
 The folder [`baseline/`](baseline/), whole:
