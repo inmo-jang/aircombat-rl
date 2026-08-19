@@ -27,6 +27,10 @@ T_MAX_S = TASK.t_max                                    # engagement clock [s]
 
 OMEGA_MAX_RAD_S = math.radians(12.0)                    # sustainable turn rate [rad/s]
 
+#: What the policy hands the environment: `discrete` or `continuous`.  The env
+#: offers both; `tools.grade` builds it from `Policy.ACTION_MODE`.
+ACTION_MODE = "discrete"
+
 
 # =============================================================================
 # TODO 2 -- state design
@@ -127,13 +131,17 @@ class Shaped(gym.Wrapper):
         self.observation_space = gym.spaces.Box(
             -np.inf, np.inf, shape=(state.dim,), dtype=np.float32)
 
+    def _act(self, action):
+        """A `Discrete` env wants a python int; a `Box` one wants the array."""
+        return action if ACTION_MODE == "continuous" else int(action)
+
     def reset(self, **kw):
         obs, info = self.env.reset(**kw)
         self._prev = None
         return self.state(obs), info
 
     def step(self, action):
-        obs, _, terminated, truncated, info = self.env.step(int(action))
+        obs, _, terminated, truncated, info = self.env.step(self._act(action))
         reward = float(self.fn(info, self._prev, info.get("won")))
         self._prev = dict(info)
         return self.state(obs), reward, terminated, truncated, info
@@ -146,5 +154,5 @@ def make_env(seed: int | None = None, shaped: bool = True) -> gym.Env:
         shaped=False  the 39 raw channels, untouched
         seed          seeds the env's own generator
     """
-    env = TASK(action_mode="discrete", seed=seed)
+    env = TASK(action_mode=ACTION_MODE, seed=seed)
     return Shaped(env, State(), RewardFunction()) if shaped else env

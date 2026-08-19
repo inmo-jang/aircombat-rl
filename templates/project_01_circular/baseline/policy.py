@@ -7,7 +7,7 @@ import torch
 from stable_baselines3 import DQN
 from stable_baselines3.common.monitor import Monitor
 
-from wrappers import State
+from wrappers import ACTION_MODE, State
 
 # =============================================================================
 # TODO 1 -- algorithm and network
@@ -20,6 +20,10 @@ ACTIVATION = torch.nn.ReLU
 
 
 class Policy:
+
+    #: `discrete` or `continuous`, from `wrappers`.  `tools.grade` reads it here
+    #: and builds the env the way training did.
+    ACTION_MODE = ACTION_MODE
 
     #: default training budget
     TOTAL_STEPS = 200_000
@@ -53,7 +57,7 @@ class Policy:
     def act(self, obs):
         """raw channels -> one action. """
         a, _ = self.model.predict(self.state(obs), deterministic=True)
-        return int(a)
+        return int(a) if ACTION_MODE == "discrete" else a
 
     def __str__(self) -> str:
         """Algorithm and shape in one line: input -> hidden -> actions."""

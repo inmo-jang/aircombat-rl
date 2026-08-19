@@ -1,4 +1,4 @@
-# Project 01 
+# Project 01 - Circular
 
 Shoot down a target flying a steady turn.  You design what the policy sees and
 what it is paid; the algorithm comes from `stable-baselines3`.
@@ -16,13 +16,14 @@ baseline/
 
 **Work inside that folder.**  `train.py` is given.
 
-## The three TODOs
+## The TODOs
 
 | where | what |
 |---|---|
 | `policy.py` · TODO 1 | algorithm, network, hyperparameters |
 | `wrappers.py` · TODO 2 | `State` -- what the policy sees.  The raw channels are the material; Do not just pick |
 | `wrappers.py` · TODO 3 | `RewardFunction` -- what one step pays |
+| `wrappers.py` · `ACTION_MODE` | `discrete`, 9 preset manoeuvres, or `continuous`, a `Box(-1, 1, (2,))` of heading and speed |
 
 ## Training
 
