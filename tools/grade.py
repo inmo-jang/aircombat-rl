@@ -14,8 +14,9 @@ algorithm nor the network; the contract is in `tools.policies`.
              optimistic.  Real marking passes `--band` with a band that is not
              in this repository.
     n        40 engagements, so two scores can be read side by side.
-    seats    `DUEL = False` flies red only.  `DUEL = True` splits the 40 as 20
-             per seat -- a seat bias has turned up here before.
+    seats    red only, unless the assignment is in `SYMMETRIC_SEATS` -- then
+             the 40 split 20 per seat, as a control on position.  A seat bias
+             has turned up here before.
     policy   greedy.
 
 **Compare standard scores only with each other.**  The same weights read 0.94 at
@@ -100,18 +101,30 @@ def summarise(rows: list[dict], seat: str = "red") -> dict:
 def score(design: pathlib.Path, weights: pathlib.Path, proj,
           seed0: int, n: int) -> dict:
     """One design's score -- the rows and their summary."""
-    env = proj.ENV()
-    act, note = policies.load(design, weights)
-    episodes = play(env, act, seed0, n)
+    act, note, mode = policies.load(design, weights)
+    seats = (("red", "blue") if proj.DIR.name in P.SYMMETRIC_SEATS
+             else ("red",))
+    episodes = []
+    for seat in seats:
+        env = proj.ENV(action_mode=mode, seat=seat)
+        # The same seeds in both seats: one engagement seen from each side, not
+        # two different ones.
+        rows = play(env, act, seed0, n // len(seats), seat=seat)
+        for r in rows:
+            r["seat"] = seat
+        episodes += rows
     # Relative to the design: this file lands beside the weights, so an
     # absolute path is just the name of one laptop.
     try:
         shown = weights.resolve().relative_to(design.resolve()).as_posix()
     except ValueError:
         shown = weights.as_posix()
+    per_seat = ({seat: summarise([r for r in episodes if r["seat"] == seat])
+                 for seat in seats} if len(seats) > 1 else None)
     return dict(submission=design.name, policy=shown,
                 policy_abs=str(weights.resolve()), note=note, band=seed0,
-                summary=summarise(episodes), episodes=episodes)
+                seats=list(seats), summary=summarise(episodes),
+                per_seat=per_seat, episodes=episodes)
 
 
 def main(argv=None) -> int:
@@ -136,13 +149,6 @@ def main(argv=None) -> int:
                     help="where to write the JSON.  Default: score.json next "
                          "to the weights")
     args = ap.parse_args(rest)
-
-    if proj.DUEL:
-        raise SystemExit(
-            f"{proj.DIR.name} is a duel: the score is a six-outcome verdict "
-            "table split 20/20 across seats, and its best is an assembly rather "
-            "than one checkpoint.  Use its own `score_chain.py` / `score_04.py` "
-            "until this tool grows the duel mode.")
 
     design = P.design_path(proj, args.design)
     try:
@@ -175,9 +181,12 @@ def main(argv=None) -> int:
             print(f"  {r['submission'][:44]:44s}  -- {r['error'][:70]}")
             continue
         m = r["summary"]
+        seats = ("   " + "  ".join(f"{k} {v['kills']}/{v['n']}"
+                                   for k, v in r["per_seat"].items())
+                 if r.get("per_seat") else "")
         print(f"  {r['submission'][:44]:44s}  {m['kills']:>2}/{m['n']} = "
               f"{m['rate']:.2f}  t_kill {m['t_kill']}"
-              f"  WEZ {m['wez_time']}s  exposed {m['wez_time_foe']}s")
+              f"  WEZ {m['wez_time']}s  exposed {m['wez_time_foe']}s{seats}")
     scored = [r for r in rows if "summary" in r]
     if not scored:
         return 1

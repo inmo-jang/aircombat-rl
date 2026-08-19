@@ -47,6 +47,14 @@ ASSIGNMENTS = {
     "project_04_fair": "AirCombat/FairFight-v0",
 }
 
+#: Assignments whose two seats are the same problem, so half the engagements can
+#: be flown from each as a control on position.  `AdvantagedFight` is not one of
+#: them: its western seat is drawn pointing at the foe within 90 degrees and its
+#: eastern one over the full circle, and `seat` picks which aircraft to fly
+#: rather than mirroring that draw -- measured, red starts 45 degrees off the
+#: line of sight and blue 93.  Flying its blue seat is a different assignment.
+SYMMETRIC_SEATS = {"project_04_fair"}
+
 
 class Project:
     """One assignment: where it lives, what it is called, what it runs on."""
@@ -61,7 +69,7 @@ class Project:
         # Ask the class rather than trust a flag: a duel is exactly an
         # environment where the learner can lose, and that is what `DuelEnv` is.
         self.DUEL = issubclass(self.ENV, DuelEnv)
-        self.TITLE = f"Assignment {folder.name.split('_')[1]}"
+        self.TITLE = f"Project {folder.name.split('_')[1]}"
 
     def __repr__(self) -> str:
         return f"<{self.DIR.name} {self.ENV_ID} duel={self.DUEL}>"

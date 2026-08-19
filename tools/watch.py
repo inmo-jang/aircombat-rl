@@ -44,11 +44,11 @@ def main(argv=None) -> int:
     weights = (pathlib.Path(args.policy) if args.policy
                else policies.default_weights(design))
 
-    env = proj.ENV()
     try:
-        act, note = policies.load(design, weights)
+        act, note, mode = policies.load(design, weights)
     except policies.Mismatch as e:
         raise SystemExit(f"cannot fly this policy: {e}")
+    env = proj.ENV(action_mode=mode)
 
     score = _known_score(design, weights)
     print(f"  {proj.TITLE} · {design.name}")

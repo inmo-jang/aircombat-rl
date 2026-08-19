@@ -49,11 +49,17 @@ def default_weights(design: pathlib.Path) -> pathlib.Path:
     raise Mismatch(f"no {' or '.join(WEIGHTS)} in {design} -- or pass --policy")
 
 
+#: What a design may ask the environment for.  Two strings, so declaring one is
+#: a choice between the task's own action spaces and not a way to configure it.
+ACTION_MODES = ("discrete", "continuous")
+
+
 def load(design: pathlib.Path, weights: pathlib.Path, device: str = "cpu"):
-    """(design, weights) -> (act, note).
+    """(design, weights) -> (act, note, action_mode).
 
     `act(obs)` is the callable the environment is stepped with; `note` is the
-    one-line description a table or a viewer caption prints.
+    one-line description a table or a viewer caption prints; `action_mode` is
+    `Policy.ACTION_MODE` if the design declares one, else `"discrete"`.
 
     Importing the design runs its code -- unavoidable, it *is* what is being
     graded -- so marking a batch should give each one its own process.
@@ -113,7 +119,13 @@ def load(design: pathlib.Path, weights: pathlib.Path, device: str = "cpu"):
 
     if not hasattr(policy, "act"):
         raise Mismatch("Policy has no `.act(obs)`")
-    return policy.act, str(policy) if _has_str(mod.Policy) else "Policy"
+
+    mode = getattr(mod.Policy, "ACTION_MODE", "discrete")
+    if mode not in ACTION_MODES:
+        raise Mismatch(f"Policy.ACTION_MODE is {mode!r}; "
+                       f"expected one of {', '.join(ACTION_MODES)}")
+    note = str(policy) if _has_str(mod.Policy) else "Policy"
+    return policy.act, note, mode
 
 
 def _has_str(cls) -> bool:
