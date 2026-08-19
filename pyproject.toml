@@ -29,12 +29,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["aircombat_gym*"]
 
-# The student manual ships with the package it documents, not just with the repo
+# The student manual ships with the package it documents, not just with the repo --
+# and so do the images it references, or an installed copy renders broken links.
 [tool.setuptools.package-data]
-aircombat_gym = ["README.md"]
+aircombat_gym = ["README.md", "docs/*.gif"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # archived/ holds modules waiting to be restored; their relative imports point
 # at where they used to live, so collecting them would fail on import
-norecursedirs = ["archived", "preflight", "docs", ".git"]
+norecursedirs = ["archived", "build", ".git"]
