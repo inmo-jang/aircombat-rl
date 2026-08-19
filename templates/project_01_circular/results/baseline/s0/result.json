@@ -1,0 +1,8 @@
+{
+  "seed": 0,
+  "policy": "DQN 2->[64, 64]->9",
+  "steps": 100,
+  "val_best": 1,
+  "val_n": 30,
+  "minutes": 0.7
+}
