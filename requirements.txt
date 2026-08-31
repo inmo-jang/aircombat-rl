@@ -1,0 +1,35 @@
+# aircombat-rl -- dependencies
+#
+#     pip install -r requirements.txt
+#     pip install -e .              # then install the package itself
+#
+# `pyproject.toml` is the source of truth and carries the same three groups as
+# extras (`pip install -e ".[train,dev]"`).  This file exists so a student can
+# get an environment up without reading it.
+#
+# Python >= 3.10.  Verified on 3.10.18 with the versions noted below; nothing
+# but JSBSim is pinned, so a fresh install takes current releases.
+
+# --- the environment ---------------------------------------------------------
+# Pinned, not floated: the flight model is the specification here.  The envelope
+# constants in `aircombat_gym/core/envelope.py` -- corner speed, n_max(V, h), the
+# throttle-to-thrust map -- were measured against this exact build, and a JSBSim
+# release that changes the f16 aerodynamics invalidates them silently.
+jsbsim==1.3.0
+
+numpy                       # verified 2.2.6
+gymnasium                   # verified 1.2.2
+pygame                      # verified 2.6.1 -- the viewer and both hand-flying tools
+
+# --- training ----------------------------------------------------------------
+# Needed for the assignments, not for the environment.  `aircombat_gym` never
+# imports either of these and `tests/test_aircombat.py` enforces that, so if you
+# only want to fly the aircraft you can stop after the block above.
+#
+# torch: install the build that matches your machine.  The default wheel is
+# CPU-only on Windows/macOS; for CUDA follow https://pytorch.org/get-started/
+torch                       # verified 2.9.1
+stable-baselines3           # verified 2.9.0
+
+# --- tests -------------------------------------------------------------------
+pytest                      # verified 9.1.1

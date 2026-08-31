@@ -2,8 +2,20 @@
 
 Air combat environments on a JSBSim F-16.
 
+## Setup
+
+
 ```bash
-pip install -e .
+conda create -n aircombat python=3.10 # Python 3.10
+conda activate aircombat
+
+pip install -r requirements.txt      # dependencies
+pip install -e .                     # the package itself
+```
+
+Check it:
+
+```bash
 python -m aircombat_gym.wvr.play --env circular      # fly one yourself
 ```
 
