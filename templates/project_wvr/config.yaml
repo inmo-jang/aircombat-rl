@@ -1,0 +1,44 @@
+# project_wvr -- who flies, and where they start.
+#
+#   python train.py      trains `red` against `blue`
+#   python match.py      flies `red` against `blue`, both already trained
+
+# --- the two teams ------------------------------------------------------------
+# A team folder in players/ holding policy.py, wrappers.py and policy_net.zip,
+# as a path from this file -- e.g. players/trainee.  Or a scripted
+# pilot: ace, pursuit, lead, circler, evader.
+#
+# train.py trains the `red` folder (policy_net.zip not needed yet) and uses
+# `blue` as the opponent.  A shared copy (*_share) can fly, but not be trained.
+red:  players/policy_01_share
+blue: players/policy_02_share
+
+# --- where they start -----------------------------------------------------------
+# Arena centre is (0, 0).  x east, y north [m].  heading: 0 north, clockwise
+# [deg].  Altitude is fixed at 20,000 ft.  The arena is 50 km in radius.
+#
+# Keep the two on the same y.  Positions are projected onto the globe, so a
+# north/south pair is not a mirror image and one side starts with an edge.
+start:
+  red:  {x: -5000, y: 0, heading: 0,   speed_kt: 450}
+  blue: {x:  5000, y: 0, heading: 180, speed_kt: 450}
+  randomize:            # 0 turns each one off
+    position_m: 0       # each of x and y moved by up to this much
+    heading_deg: 10     # each heading turned by up to this much
+    speed_frac: 0.10    # both speeds scaled by one factor, within +-this
+
+# --- altitude -----------------------------------------------------------------
+# Both start at 20,000 ft and the autopilot holds it, but hard, fast turns can
+# pull an aircraft off.  Leaving 20,000 ft +- this ends the engagement: the
+# aircraft that left loses; both on the same step is `mutual`.  A kill on that
+# step still counts as the kill.  0 turns the rule off.
+altitude_band_ft: 1000
+
+# --- fairness -----------------------------------------------------------------
+# true: the teams also trade starts -- training draws one per engagement, and
+# match.py flies every seed both ways: as configured, then swapped.  Each team
+# keeps its colour; only where it starts changes.
+swap_seats: true
+
+# match.py: seeds, each flown in every arrangement
+engagements: 10

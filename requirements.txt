@@ -30,6 +30,7 @@ pygame                      # verified 2.6.1 -- the viewer and both hand-flying 
 # CPU-only on Windows/macOS; for CUDA follow https://pytorch.org/get-started/
 torch                       # verified 2.9.1
 stable-baselines3           # verified 2.9.0
+pyyaml                      # templates/project_wvr/config.yaml
 
 # --- tests -------------------------------------------------------------------
 pytest                      # verified 9.1.1
