@@ -31,11 +31,12 @@ from aircombat_gym.tools import render
 from aircombat_gym.tools.render import (BAD, BG, DIM, FG, GOOD, GRID, PANEL, WARN,
                                         Track, Weapon, bar, gap, text)
 
-TEAM = {   # body, trail, cone (idle), cone (in WEZ), TacView colour
+TEAM = {   # body, trail, cone (idle), cone (in WEZ), TacView colour and 3D model
+    # The model is the look in TacView only -- both fly the same F-16.
     "red": dict(body=(240, 90, 90), trail=(130, 58, 58), idle=(92, 52, 52),
-                hot=(255, 140, 140), acmi="Red", acmi_id="101"),
+                hot=(255, 140, 140), acmi="Red", acmi_id="101", model="MiG-29A"),
     "blue": dict(body=(90, 160, 255), trail=(52, 88, 140), idle=(48, 66, 100),
-                 hot=(150, 200, 255), acmi="Blue", acmi_id="102"),
+                 hot=(150, 200, 255), acmi="Blue", acmi_id="102", model="F-16C"),
 }
 SPEEDS = (1.0, 2.0, 4.0, 0.0)          # TAB cycles these.  0 = uncapped
 SPEED_MIN, SPEED_MAX = 0.125, 64.0
@@ -341,8 +342,10 @@ def watch(env, red, blue, plan, *, speed=1.0, sinks=(), on_result=None):
             snaps = env._last
             objs = []
             for team, other in (("red", "blue"), ("blue", "red")):
+                # TacView picks the 3D model by Name, so Name is the type
                 o = state_to_object(tracks[team].state, TEAM[team]["acmi_id"],
-                                    names[team], TEAM[team]["acmi"])
+                                    TEAM[team]["model"], TEAM[team]["acmi"])
+                o["callsign"] = o["pilot"] = names[team]   # the label beside it
                 o["locked"] = TEAM[other]["acmi_id"] if snaps[team]["in_wez"] else None
                 objs.append(o)
             for s in sinks:

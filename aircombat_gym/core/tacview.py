@@ -64,6 +64,10 @@ class AcmiWriter:
 
         `locked` (another object's id) writes `LockedTarget`, which TacView draws
         as a line to the thing being tracked.
+
+        `callsign` / `pilot`, when given, are written with `name`: the label
+        TacView puts beside the model.  `name` stays the aircraft type, because
+        that is what TacView picks the 3D model by.
         """
         chunk = []
         if t > self._last_t:
@@ -77,6 +81,10 @@ class AcmiWriter:
                 self._declared.add(oid)
                 props += (f",Name={o.get('name', 'F-16C')},Color={color}"
                           f",Type={o.get('type', 'Air+FixedWing')}")
+                for key, prop in (("callsign", "CallSign"), ("pilot", "Pilot")):
+                    if o.get(key):
+                        # a comma would end the value early in ACMI
+                        props += f",{prop}={str(o[key]).replace(',', chr(92) + ',')}"
             elif color != self._colour.get(oid):
                 props += f",Color={color}"
             self._colour[oid] = color
