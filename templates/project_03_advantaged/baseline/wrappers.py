@@ -99,9 +99,10 @@ class RewardFunction:
                `in_wez`, `own_health`, `opp_health`, `opp_speed`, `t`
         prev   the previous step's `info`, None on the first step
         won    None until the engagement ends
+        obs    the 39 raw channels after this step -- `O.unpack(obs)` names them
     """
 
-    def __call__(self, info, prev, won) -> float:
+    def __call__(self, info, prev, won, obs=None) -> float:
         # A win is one reward in ~2,400 steps and never arrives by accident.
         # TODO: add terms that pay on the way there.
         return self._terminal(won)
@@ -142,7 +143,7 @@ class Shaped(gym.Wrapper):
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(self._act(action))
-        reward = float(self.fn(info, self._prev, info.get("won")))
+        reward = float(self.fn(info, self._prev, info.get("won"), obs))
         self._prev = dict(info)
         return self.state(obs), reward, terminated, truncated, info
 
