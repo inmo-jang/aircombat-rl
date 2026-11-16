@@ -59,7 +59,7 @@ Delete work too: they are what the keypad sends with NumLock off.
   tab             STICK <-> AUTOPILOT
   BACKSPACE       new random engagement (full reset)
   p / esc         pause / quit
-  + - / g         zoom / trail length
+  + -             zoom
 
 The vertical axis is the one place the layers disagree, on purpose: W is
 stick-forward in STICK (nose down) and the altitude target going up in AUTOPILOT.
@@ -125,7 +125,7 @@ EH_FULL_FT = 50000.0
 
 HEIGHT_BLUE = (80, 120, 200)
 
-TRAIL_LENGTHS = (600, 2400, 0)          # 0 = unlimited
+TRAIL_LEN = 600                         # points kept per aircraft: 30 s at 20 Hz
 LAYERS = ("STICK", "AUTOPILOT")
 CMD_MODES = ("CONTINUOUS", "DISCRETE")
 
@@ -383,7 +383,6 @@ def main(argv: list[str] | None = None) -> int:
                throttle=ac.backend.controls["throttle_cmd"])
     trail: list[tuple[float, float]] = []
     profile: list[tuple[float, float]] = []
-    trail_i = 0
     scale = args.scale
     paused = False
     act = (0.0, 0.0, 0.0)
@@ -454,8 +453,6 @@ def main(argv: list[str] | None = None) -> int:
                     foe = _spawn_foe(s, randomise=True)
                     foe_trail.clear()
                     kill_freeze = False
-                elif e.key == pygame.K_g:
-                    trail_i = (trail_i + 1) % len(TRAIL_LENGTHS)
                 elif e.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                     scale = max(1.0, scale / 1.3)
                 elif e.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
@@ -519,8 +516,8 @@ def main(argv: list[str] | None = None) -> int:
             accum = 0.0
         n_steps = 0
         # The fight is over when the target is down: stop the clock and let the
-        # picture stand, the way the policy viewer does.  BACKSPACE draws the
-        # next engagement, `r` resets everything.
+        # picture stand, the way the policy viewer does.  BACKSPACE resets
+        # everything and draws the next engagement.
         if foe is not None and foe.health <= 0.0:
             kill_freeze = True
             accum = 0.0
@@ -569,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
             if foe is not None:
                 foe.timeline()
                 foe_trail.append((foe.state.x, foe.state.y))
-                if len(foe_trail) > TRAIL_LENGTHS[0]:
+                if len(foe_trail) > TRAIL_LEN:
                     foe_trail.pop(0)
                 for note in foe.notes:
                     render.emit_event(sinks, note)
@@ -579,9 +576,8 @@ def main(argv: list[str] | None = None) -> int:
                               locked=bool(foe is not None and foe.eng
                                           and foe.eng.in_wez))
         if n_steps:
-            lim = TRAIL_LENGTHS[trail_i]
-            if lim and len(trail) > lim:
-                del trail[:len(trail) - lim]
+            if len(trail) > TRAIL_LEN:
+                del trail[:len(trail) - TRAIL_LEN]
             cut = s.t - PROFILE_WINDOW_S
             while len(profile) > 2 and profile[0][0] < cut:
                 profile.pop(0)
@@ -1000,7 +996,7 @@ def _panel(screen, fonts, ac, s, ctl, act, scale, paused, meter, live, rtf,
                 T("S freeze  m CONT/DISC  shift coarse", DIM, small=True)]
     pinned = keys + [
         T("BACKSPACE new random engagement   p pause", DIM, small=True),
-        T(f"tab layer  esc quit  + - zoom ({scale:.0f} m/px)  g trail",
+        T(f"tab layer  esc quit  + - zoom ({scale:.0f} m/px)",
           DIM, small=True),
         T(f"t = {s.t:6.1f} s   real time x{rtf:.2f}"
           + (f"   tacview {'up' if live.connected else 'waiting'}" if live else ""),

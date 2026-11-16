@@ -22,10 +22,10 @@ like from inside the action space.  A zero delta freezes the target rather than
 re-deriving it, so letting go is itself a command.
 
     arrows      heading -/+ , speed -/+     (nothing held = the no-op action)
-    r           new engagement
+    BACKSPACE   new engagement
     p           pause
     m           discrete <-> continuous, mid-episode
-    + -  g      zoom, trail length
+    + -         zoom
     esc         quit
 
 `--continuous` swaps `Discrete(9)` for `Box(2)`: the same two axes, but the key
@@ -54,7 +54,6 @@ ENV_BY_NAME = {"circular": "AirCombat/Circular-v0",
 assert set(ENV_BY_NAME.values()) == set(ENVS), (
     f"--env is missing {set(ENVS) - set(ENV_BY_NAME.values())}")
 KEY_REPEAT_MS = (220, 50)
-TRAIL_LENGTHS = (600, 2400, 0)          # 0 = unlimited
 
 
 def _held(keys, pygame, neg, pos) -> float:
@@ -122,7 +121,7 @@ def main(argv=None) -> int:
     demand = [0.0, 0.0]                 # continuous only: where the ramp is now
     continuous = args.continuous
     n_steps, outcome, paused = 0, None, False
-    trail_i, scale = 1, args.scale
+    scale = args.scale
     dt = 1.0 / DECISION_HZ
     accum, last_wall = 0.0, time.perf_counter()
     action = task.encode_action((0.0, 0.0, 0.0))
@@ -143,7 +142,7 @@ def main(argv=None) -> int:
             elif e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_ESCAPE:
                     running = False
-                elif e.key == pygame.K_r:
+                elif e.key == pygame.K_BACKSPACE:
                     restart()
                 elif e.key == pygame.K_p:
                     paused = not paused
@@ -156,8 +155,6 @@ def main(argv=None) -> int:
                     task.set_action_mode("continuous" if continuous
                                          else "discrete")
                     demand[:] = [0.0, 0.0]
-                elif e.key == pygame.K_g:
-                    trail_i = (trail_i + 1) % len(TRAIL_LENGTHS)
                 elif e.key in (pygame.K_PLUS, pygame.K_EQUALS):
                     scale = max(2.0, scale / 1.3)
                 elif e.key == pygame.K_MINUS:
@@ -205,9 +202,8 @@ def main(argv=None) -> int:
             own.state = combat.ac[task.seat].state
             foe.state = combat.ac[task.foe_seat].state
             foe.dead = combat.health[task.foe_seat] <= 0.0
-            cap = TRAIL_LENGTHS[trail_i]
-            render.push(own, own.state.t, cap)
-            render.push(foe, foe.state.t, cap)
+            render.push(own, own.state.t)       # keeps one 120 s episode
+            render.push(foe, foe.state.t)
             render.emit_frame(sinks, own.state.t, own.state, foe.state,
                               locked=info["in_wez"])
             if term or trunc:
@@ -298,7 +294,7 @@ def _readout(render, screen, fonts, env, task, info, action, n_steps,
             f"{info['opp_health']:.2f}"),
     ]
     if outcome is not None:
-        items += [gap(), T(f"{outcome.upper()}   r for a new engagement",
+        items += [gap(), T(f"{outcome.upper()}   BACKSPACE for a new engagement",
                            render.GOOD if outcome == "kill" else render.WARN,
                            big=True)]
     elif paused:
@@ -307,9 +303,9 @@ def _readout(render, screen, fonts, env, task, info, action, n_steps,
     pinned = [
         T("arrows  heading -/+   speed -/+   none = no-op",
           render.DIM, small=True),
-        T("r reset  p pause  m discrete/continuous  esc quit",
+        T("BACKSPACE reset  p pause  m discrete/continuous",
           render.DIM, small=True),
-        T("+ - zoom   g trail", render.DIM, small=True),
+        T("+ - zoom   esc quit", render.DIM, small=True),
         T("every keypress goes through env.step()"
           + ("   tacview up" if live is not None and live.connected else ""),
           render.DIM, small=True),
