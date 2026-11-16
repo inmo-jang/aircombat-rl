@@ -16,6 +16,7 @@ simulation is a nice picture of the wrong fight.
     BACKSPACE   throw this episode away, draw a new random one
     SPACE       pause
     TAB         1x, 2x, 4x, uncapped
+    + / -       twice / half the replay speed
     ESC / Q     quit
 
 TacView Advanced (Windows only) can take the same fight live over TCP; pass
@@ -33,13 +34,16 @@ from . import render
 from .render import (BAD, DIM, FG, GOOD, WARN, Layout, Track, Weapon,
                      bar, gap, head, text)
 
-SPEEDS = (1.0, 2.0, 4.0, 0.0)          # 0 = uncapped
+SPEEDS = (1.0, 2.0, 4.0, 0.0)          # TAB cycles these.  0 = uncapped
+SPEED_MIN, SPEED_MAX = 0.125, 64.0     # + and - stop here; past the top is uncapped
 TRAIL_MAX = 2400                       # one full episode at 20 Hz
 
 
 def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
-        on_episode=None, extra=None):
+        on_episode=None, extra=None, speed=1.0):
     """Run episodes until the window closes.  Returns (kills, episodes).
+
+    `speed` is the replay speed to start at: 1 is real time, 0 uncapped.
 
     `sinks` are TacView writers (`core.tacview`); they get a monotonic clock
     across episodes, because resetting it rewinds the recording and collapses
@@ -67,7 +71,7 @@ def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
     own, foe = Track(None), Track(None)
     scale = 12.0
     ep, kills, finished = 0, 0, 0
-    speed_i, paused, wall = 0, False, 0.0
+    speed, paused, wall = float(speed), False, 0.0
 
     seat = getattr(env, "seat", "red")
     foe_seat = "blue" if seat == "red" else "red"
@@ -103,7 +107,14 @@ def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
                 elif e.key == pygame.K_SPACE:
                     paused = not paused
                 elif e.key == pygame.K_TAB:
-                    speed_i = (speed_i + 1) % len(SPEEDS)
+                    # the next preset above the current speed; after uncapped, 1x
+                    speed = (next((s for s in SPEEDS if s > speed), 0.0)
+                             if speed else SPEEDS[0])
+                elif e.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    speed = (0.0 if not speed or speed * 2 > SPEED_MAX
+                             else speed * 2)
+                elif e.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    speed = SPEED_MAX if not speed else max(speed / 2, SPEED_MIN)
 
         if not paused and not outcome:
             obs, _, term, trunc, info = env.step(act(obs))
@@ -195,11 +206,11 @@ def fly(env, act, *, title="policy", subtitle="", seed=None, sinks=(),
             *block,
         ], pinned=[
             text("BACKSPACE new episode   SPACE pause", DIM, small=True),
-            text(f"TAB replay x{'max' if not SPEEDS[speed_i] else SPEEDS[speed_i]:g}"
+            text(f"TAB + - replay x{f'{speed:g}' if speed else 'max'}"
                  f"   ESC quit", DIM, small=True),
         ])
         render.present(sc)
-        clock.tick(20.0 * SPEEDS[speed_i] if SPEEDS[speed_i] else 0)
+        clock.tick(20.0 * speed if speed else 0)
 
     pygame.quit()
     return kills, finished

@@ -3,9 +3,11 @@
     python -m tools.watch solutions/project_01_circular
     python -m tools.watch solutions/project_01_circular --tacview     # live TacView
     python -m tools.watch solutions/project_01_circular --acmi out.acmi
+    python -m tools.watch solutions/project_01_circular --speed 4     # 4x from the start
 
     BACKSPACE  new episode      SPACE  pause
-    TAB        replay speed     ESC    quit
+    TAB        replay speed     + / -  twice / half the speed
+    ESC        quit
 
 The window comes from `aircombat_gym.tools.auto_operation.fly`, which takes an
 env and an `act(obs)`.  It drives the task environment -- same weapon, same
@@ -38,6 +40,9 @@ def main(argv=None) -> int:
     ap.add_argument("--tacview", action="store_true",
                     help="serve live telemetry (TacView Advanced, Windows)")
     ap.add_argument("--tacview-port", type=int, default=42674)
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="replay speed to start at: 1 = real time, 0 = as fast "
+                         "as it goes.  + and - double and halve it")
     args = ap.parse_args(rest)
 
     design = P.design_path(proj, args.design)
@@ -74,7 +79,7 @@ def main(argv=None) -> int:
     from aircombat_gym.tools.auto_operation import fly
     kills, n = fly(env, act, title=f"{proj.TITLE}  -  {design.name}",
                    subtitle=f"{note}   {score or ''}".strip(),
-                   seed=args.seed, sinks=sinks)
+                   seed=args.seed, sinks=sinks, speed=args.speed)
     for s in sinks:
         s.close()
     print(f"\n{kills}/{n} kills over {n} episodes")
