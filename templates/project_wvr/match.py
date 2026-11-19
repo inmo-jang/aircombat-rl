@@ -67,7 +67,8 @@ class Tally:
 def arena_env(cfg, red, blue):
     """The env a match is flown in: `red` in the red seat, `blue` the opponent."""
     return arena.ArenaEnv(cfg["start"], blue, action_mode=red.mode,
-                          altitude_band_ft=cfg["altitude_band_ft"])
+                          altitude_band_ft=cfg["altitude_band_ft"],
+                          time_limit_s=cfg["time_limit_s"], decide_on_health=True)
 
 
 def play(cfg, red, blue, plan, tally: Tally) -> None:

@@ -34,6 +34,12 @@ start:
 # step still counts as the kill.  0 turns the rule off.
 altitude_band_ft: 1000
 
+# --- the clock (match.py only) ------------------------------------------------
+# Seconds an engagement may last.  If both are still flying when it runs out,
+# the one with more health wins; within 0.02 of each other it is a `timeout`.
+# train.py does not use this: training runs 120 s and ends in a `timeout`.
+time_limit_s: 120
+
 # --- fairness -----------------------------------------------------------------
 # true: the teams also trade starts -- training draws one per engagement, and
 # match.py flies every seed both ways: as configured, then swapped.  Each team

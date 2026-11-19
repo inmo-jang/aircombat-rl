@@ -19,7 +19,8 @@ project_wvr/
 ## Rules
 
 - Two F-16s at 20,000 ft, each with a gun. Keep the other aircraft in your gun sight for about 4 s without a break and it goes down.
-- Shoot the other down and you win. Both down at once is `mutual`; 120 s with no result is `timeout`.
+- Shoot the other down and you win. Both down at once is `mutual`.
+- Match only: when `time_limit_s` (120 s) runs out, more health wins; a near tie is a `timeout`.
 - Leave 20,000 ft ± `altitude_band_ft` (1,000 ft) and you lose.
 
 ## `config.yaml`
@@ -32,6 +33,7 @@ Set up `config.yaml` before you fly or train: which two teams fly, where each st
 | `start.red`, `start.blue` | `x`, `y` [m] from the arena centre (x east, y north), `heading` [deg, 0 north, clockwise], `speed_kt`                                    |
 | `start.randomize`           | `position_m`, `heading_deg`: per aircraft, up to ±this. `speed_frac`: both speeds by one factor, within ±this. 0 turns one off           |
 | `altitude_band_ft`          | leave 20,000 ft ± this and you lose. 0 turns the rule off                                                                                       |
+| `time_limit_s`              | `match.py`: the clock [s]; then more health wins                                                                                                |
 | `swap_seats`                | `true`: every seed is also flown with the starts swapped                                                                                       |
 | `engagements`               | `match.py`: the number of seeds                                                                                                                |
 

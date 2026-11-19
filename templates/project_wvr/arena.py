@@ -27,7 +27,8 @@ import yaml
 
 from aircombat_gym.wvr import actions as A
 from aircombat_gym.wvr.baselines import BY_NAME, Bot, Evader
-from aircombat_gym.wvr.envs.base import ARENA_R, SIDES, DuelEnv, Initial
+from aircombat_gym.wvr.envs.base import (ARENA_R, MUTUAL_HEALTH_TOL, SIDES,
+                                         DuelEnv, Initial)
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -67,6 +68,7 @@ def load_config(path=None) -> dict:
     cfg.setdefault("swap_seats", True)
     cfg.setdefault("engagements", 20)
     cfg.setdefault("altitude_band_ft", 0)
+    cfg.setdefault("time_limit_s", 120)
     cfg["_dir"] = path.parent
     return cfg
 
@@ -194,20 +196,37 @@ class ArenaEnv(DuelEnv):
     same step stands.  The outcome is reported as `kill`, `died` or `mutual`,
     so a reward that knows those keeps working; `info["disqualified"]` says
     which seat left the band -- `"red"`, `"blue"` or `"both"`.
+
+    For a match only -- training leaves both off and keeps the duel's 120 s
+    `timeout`.  `time_limit_s` sets the clock.  With `decide_on_health`, a
+    clock that runs out with both still flying is won by more health --
+    reported as `kill` or `died`, with `info["decided_on"] = "health"`.
+    Within `MUTUAL_HEALTH_TOL` of each other, less than one tick of the gun,
+    it stays a `timeout`.
     """
 
     def __init__(self, start: dict, opponent: Team, *, swap_seats=False,
-                 altitude_band_ft=0.0, action_mode="discrete", seed=None,
-                 seat=None):
+                 altitude_band_ft=0.0, time_limit_s=None, decide_on_health=False,
+                 action_mode="discrete", seed=None, seat=None):
         self.start, self.opponent, self.swap_seats = start, opponent, swap_seats
         self.altitude_band_ft = float(altitude_band_ft or 0.0)
-        self.swapped, self._dq = False, None
+        self.decide_on_health = bool(decide_on_health)
+        if time_limit_s:
+            # before the base class builds `Combat`, which takes its clock from here
+            self.t_max = float(time_limit_s)
+        self.swapped, self._dq, self._on_health = False, None, False
         self._seat_rng = np.random.default_rng(seed)
         super().__init__(action_mode=action_mode, seed=seed, seat=seat)
 
     def verdict(self, c):
         ended, won, reason = super().verdict(c)
-        self._dq = None
+        self._dq, self._on_health = None, False
+        if reason == "timeout" and self.decide_on_health:
+            lead = c.health[self.seat] - c.health[self.foe_seat]
+            if abs(lead) > MUTUAL_HEALTH_TOL:
+                self._on_health = True
+                return True, lead > 0, ("kill" if lead > 0 else "died")
+            return ended, won, reason
         if ended or not self.altitude_band_ft:
             return ended, won, reason
         out = {s: abs(c.ac[s].state.h_ft - ALT_FT) > self.altitude_band_ft
@@ -227,6 +246,8 @@ class ArenaEnv(DuelEnv):
         obs, reward, terminated, truncated, info = super().step(action)
         if self._dq:
             info["disqualified"] = self._dq
+        if self._on_health:
+            info["decided_on"] = "health"
         return obs, reward, terminated, truncated, info
 
     def sample(self, rng):
